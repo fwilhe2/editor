@@ -1,0 +1,455 @@
+//! The platform-agnostic editor core.
+//!
+//! Every shell — the CLI, the TUI, GTK4, SwiftUI, WinUI — drives the editor through
+//! [`Editor`] and renders from [`Viewport`]. No shell holds editor state of its own,
+//! and no capability may exist in a shell that is missing here.
+//!
+//! Rust shells depend on this crate directly. macOS and Windows will reach it through
+//! UniFFI-generated bindings; [`Editor`] is shaped for that (an opaque object with
+//! interior mutability and plain-scalar arguments) but the annotations are not added yet.
+
+mod action;
+mod error;
+mod state;
+
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
+
+use serde::{Deserialize, Serialize};
+
+pub use action::Action;
+pub use error::{EditorError, Result};
+pub use state::{Direction, EditorState, Position, Viewport};
+
+/// Implemented by the shell, called by the core when the document changes.
+///
+/// This is the reactive half of the architecture: shells never poll. On macOS and
+/// Windows this becomes a UniFFI foreign trait implemented in Swift/C#.
+pub trait EditorObserver: Send + Sync {
+    fn state_changed(&self);
+}
+
+/// The handle every shell talks to.
+///
+/// All methods take `&self` — the lock lives inside — so a shell can share one
+/// `Arc<Editor>` between its UI thread and any background work.
+pub struct Editor {
+    state: RwLock<EditorState>,
+    observer: RwLock<Option<Arc<dyn EditorObserver>>>,
+}
+
+impl Default for Editor {
+    fn default() -> Self {
+        Editor::new()
+    }
+}
+
+impl Editor {
+    /// An empty, unnamed document.
+    pub fn new() -> Self {
+        Editor {
+            state: RwLock::new(EditorState::default()),
+            observer: RwLock::new(None),
+        }
+    }
+
+    /// An editor with `path` already loaded.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let editor = Editor::new();
+        editor.load_file(path)?;
+        Ok(editor)
+    }
+
+    pub fn set_observer(&self, observer: Arc<dyn EditorObserver>) {
+        *self.observer.write().unwrap() = Some(observer);
+    }
+
+    // --- document -------------------------------------------------------------
+
+    pub fn load_file(&self, path: impl AsRef<Path>) -> Result<()> {
+        self.mutate(|state| state.load_file(path.as_ref()))
+    }
+
+    pub fn save_file(&self) -> Result<()> {
+        self.mutate(|state| state.save())
+    }
+
+    pub fn save_file_as(&self, path: impl AsRef<Path>) -> Result<()> {
+        self.mutate(|state| state.save_to(path.as_ref()))
+    }
+
+    // --- editing --------------------------------------------------------------
+
+    /// Insert a single character at the cursor. The keystroke path for UI shells.
+    pub fn handle_input(&self, ch: char) {
+        self.insert_text(&ch.to_string());
+    }
+
+    /// Insert a string at the cursor, as one undoable action.
+    pub fn insert_text(&self, text: &str) {
+        self.mutate(|state| state.insert_text(text));
+    }
+
+    /// Delete the character before the cursor. False if already at the document start.
+    pub fn handle_backspace(&self) -> bool {
+        self.mutate(|state| state.backspace())
+    }
+
+    /// Undo the most recent action. False if there is nothing to undo.
+    pub fn undo(&self) -> bool {
+        self.mutate(|state| state.undo())
+    }
+
+    /// Redo the most recently undone action. False if there is nothing to redo.
+    pub fn redo(&self) -> bool {
+        self.mutate(|state| state.redo())
+    }
+
+    // --- cursor and view ------------------------------------------------------
+
+    pub fn move_cursor(&self, direction: Direction) {
+        self.mutate(|state| state.move_cursor(direction));
+    }
+
+    /// Jump the cursor to `position`, clamped into the document. Returns where it landed.
+    pub fn set_cursor(&self, position: Position) -> Position {
+        self.mutate(|state| state.set_cursor(position))
+    }
+
+    pub fn cursor(&self) -> Position {
+        let state = self.state.read().unwrap();
+        state.clamp(state.cursor)
+    }
+
+    /// Lines `start_line..end_line` (end exclusive) plus the cursor — the only read path.
+    pub fn get_viewport(&self, start_line: u64, end_line: u64) -> Viewport {
+        self.state.read().unwrap().viewport(start_line, end_line)
+    }
+
+    /// First visible line, owned by the core so every shell scrolls identically.
+    pub fn scroll_offset(&self) -> u64 {
+        self.state.read().unwrap().scroll_offset
+    }
+
+    pub fn set_scroll_offset(&self, offset: u64) {
+        self.mutate(|state| {
+            let last_line = state.line_count().saturating_sub(1);
+            state.scroll_offset = offset.min(last_line);
+        });
+    }
+
+    // --- inspection -----------------------------------------------------------
+
+    pub fn line_count(&self) -> u64 {
+        self.state.read().unwrap().line_count()
+    }
+
+    pub fn char_count(&self) -> u64 {
+        self.state.read().unwrap().char_count()
+    }
+
+    /// True when there are unsaved edits.
+    pub fn is_dirty(&self) -> bool {
+        self.state.read().unwrap().dirty
+    }
+
+    pub fn path(&self) -> Option<PathBuf> {
+        self.state.read().unwrap().path.clone()
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.state.read().unwrap().undo_stack.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.state.read().unwrap().redo_stack.is_empty()
+    }
+
+    /// The whole document. Convenience for tests and small files — shells render
+    /// from [`Editor::get_viewport`] instead.
+    pub fn text(&self) -> String {
+        self.state.read().unwrap().text.to_string()
+    }
+
+    // --- session --------------------------------------------------------------
+
+    /// The state a stateless caller (the CLI) must carry between invocations.
+    pub fn session(&self) -> Session {
+        let state = self.state.read().unwrap();
+        Session {
+            cursor: state.cursor,
+            scroll_offset: state.scroll_offset,
+            undo_stack: state.undo_stack.clone(),
+            redo_stack: state.redo_stack.clone(),
+        }
+    }
+
+    pub fn restore_session(&self, session: Session) {
+        self.mutate(|state| {
+            state.cursor = state.clamp(session.cursor);
+            state.scroll_offset = session.scroll_offset;
+            state.undo_stack = session.undo_stack;
+            state.redo_stack = session.redo_stack;
+        });
+    }
+
+    // --- internals ------------------------------------------------------------
+
+    /// Run `f` under the write lock, release it, *then* notify.
+    ///
+    /// The lock must be dropped first: an observer is free to call back into the
+    /// editor to re-read state, which would otherwise deadlock.
+    fn mutate<T>(&self, f: impl FnOnce(&mut EditorState) -> T) -> T {
+        let out = {
+            let mut state = self.state.write().unwrap();
+            f(&mut state)
+        };
+        self.notify();
+        out
+    }
+
+    fn notify(&self) {
+        let observer = self.observer.read().unwrap().clone();
+        if let Some(observer) = observer {
+            observer.state_changed();
+        }
+    }
+}
+
+/// Cursor and history, serialized so a process that exits can pick up where it left off.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Session {
+    pub cursor: Position,
+    #[serde(default)]
+    pub scroll_offset: u64,
+    #[serde(default)]
+    pub undo_stack: Vec<Action>,
+    #[serde(default)]
+    pub redo_stack: Vec<Action>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn editor_with(text: &str) -> Editor {
+        let editor = Editor::new();
+        editor.insert_text(text);
+        editor
+    }
+
+    #[test]
+    fn insert_advances_the_cursor() {
+        let editor = editor_with("hello");
+        assert_eq!(editor.text(), "hello");
+        assert_eq!(editor.cursor(), Position::new(0, 5));
+    }
+
+    #[test]
+    fn insert_across_lines_tracks_the_cursor() {
+        let editor = editor_with("ab\ncd");
+        assert_eq!(editor.cursor(), Position::new(1, 2));
+        assert_eq!(editor.line_count(), 2);
+    }
+
+    #[test]
+    fn backspace_joins_lines() {
+        let editor = editor_with("ab\ncd");
+        editor.set_cursor(Position::new(1, 0));
+        assert!(editor.handle_backspace());
+        assert_eq!(editor.text(), "abcd");
+        assert_eq!(editor.cursor(), Position::new(0, 2));
+    }
+
+    #[test]
+    fn backspace_at_start_is_a_no_op() {
+        let editor = editor_with("abc");
+        editor.set_cursor(Position::new(0, 0));
+        assert!(!editor.handle_backspace());
+        assert_eq!(editor.text(), "abc");
+    }
+
+    #[test]
+    fn undo_and_redo_round_trip() {
+        let editor = editor_with("hello");
+        editor.insert_text(" world");
+        assert_eq!(editor.text(), "hello world");
+
+        assert!(editor.undo());
+        assert_eq!(editor.text(), "hello");
+        assert_eq!(editor.cursor(), Position::new(0, 5));
+
+        assert!(editor.undo());
+        assert_eq!(editor.text(), "");
+        assert!(!editor.undo());
+
+        assert!(editor.redo());
+        assert!(editor.redo());
+        assert_eq!(editor.text(), "hello world");
+        assert!(!editor.redo());
+    }
+
+    #[test]
+    fn a_new_edit_drops_the_redo_stack() {
+        let editor = editor_with("abc");
+        editor.undo();
+        editor.insert_text("xyz");
+        assert!(!editor.can_redo());
+        assert_eq!(editor.text(), "xyz");
+    }
+
+    #[test]
+    fn undo_restores_a_backspaced_character() {
+        let editor = editor_with("abc");
+        editor.handle_backspace();
+        assert_eq!(editor.text(), "ab");
+        editor.undo();
+        assert_eq!(editor.text(), "abc");
+        assert_eq!(editor.cursor(), Position::new(0, 3));
+    }
+
+    #[test]
+    fn horizontal_movement_crosses_line_boundaries() {
+        let editor = editor_with("ab\ncd");
+        editor.set_cursor(Position::new(1, 0));
+        editor.move_cursor(Direction::Left);
+        assert_eq!(editor.cursor(), Position::new(0, 2));
+        editor.move_cursor(Direction::Right);
+        assert_eq!(editor.cursor(), Position::new(1, 0));
+    }
+
+    #[test]
+    fn vertical_movement_clamps_to_shorter_lines() {
+        let editor = editor_with("long line\nx\n");
+        editor.set_cursor(Position::new(0, 9));
+        editor.move_cursor(Direction::Down);
+        assert_eq!(editor.cursor(), Position::new(1, 1));
+    }
+
+    #[test]
+    fn movement_stops_at_the_document_edges() {
+        let editor = editor_with("ab");
+        editor.set_cursor(Position::new(0, 0));
+        editor.move_cursor(Direction::Left);
+        editor.move_cursor(Direction::Up);
+        assert_eq!(editor.cursor(), Position::new(0, 0));
+
+        editor.set_cursor(Position::new(0, 2));
+        editor.move_cursor(Direction::Right);
+        editor.move_cursor(Direction::Down);
+        assert_eq!(editor.cursor(), Position::new(0, 2));
+    }
+
+    #[test]
+    fn viewport_returns_only_the_requested_lines() {
+        let editor = editor_with("one\ntwo\nthree\nfour");
+        let viewport = editor.get_viewport(1, 3);
+        assert_eq!(viewport.start_line, 1);
+        assert_eq!(viewport.lines, vec!["two", "three"]);
+        assert_eq!(viewport.total_lines, 4);
+    }
+
+    #[test]
+    fn viewport_clamps_out_of_range_requests() {
+        let editor = editor_with("one\ntwo");
+        let viewport = editor.get_viewport(0, 500);
+        assert_eq!(viewport.lines, vec!["one", "two"]);
+
+        // A start past the end lands on the last line rather than returning nothing,
+        // so a stale scroll offset can never blank the view.
+        let past_end = editor.get_viewport(99, 120);
+        assert_eq!(past_end.start_line, 1);
+        assert_eq!(past_end.lines, vec!["two"]);
+    }
+
+    #[test]
+    fn an_empty_range_returns_no_lines() {
+        let editor = editor_with("one\ntwo");
+        assert!(editor.get_viewport(1, 1).lines.is_empty());
+    }
+
+    #[test]
+    fn cursor_is_clamped_into_the_document() {
+        let editor = editor_with("ab");
+        assert_eq!(
+            editor.set_cursor(Position::new(99, 99)),
+            Position::new(0, 2)
+        );
+    }
+
+    #[test]
+    fn observers_are_notified_on_every_mutation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Counter(AtomicUsize);
+        impl EditorObserver for Counter {
+            fn state_changed(&self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let editor = Editor::new();
+        let counter = Arc::new(Counter(AtomicUsize::new(0)));
+        editor.set_observer(counter.clone());
+
+        editor.handle_input('a');
+        editor.move_cursor(Direction::Left);
+        editor.undo();
+        assert_eq!(counter.0.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn an_observer_may_read_the_editor_without_deadlocking() {
+        struct Reader(RwLock<Option<Arc<Editor>>>);
+        impl EditorObserver for Reader {
+            fn state_changed(&self) {
+                if let Some(editor) = self.0.read().unwrap().as_ref() {
+                    let _ = editor.get_viewport(0, 1);
+                }
+            }
+        }
+
+        let editor = Arc::new(Editor::new());
+        let reader = Arc::new(Reader(RwLock::new(Some(editor.clone()))));
+        editor.set_observer(reader);
+        editor.handle_input('a');
+        assert_eq!(editor.text(), "a");
+    }
+
+    #[test]
+    fn a_session_carries_cursor_and_history_across_editors() {
+        let editor = editor_with("hello");
+        let session = editor.session();
+
+        let resumed = Editor::new();
+        resumed.insert_text("hello");
+        resumed.restore_session(session);
+        assert_eq!(resumed.cursor(), Position::new(0, 5));
+        assert!(resumed.undo());
+        assert_eq!(resumed.text(), "");
+    }
+
+    #[test]
+    fn files_round_trip_through_disk() {
+        let dir = std::env::temp_dir().join(format!("editor-core-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("round-trip.txt");
+
+        let editor = editor_with("first\nsecond");
+        editor.save_file_as(&path).unwrap();
+        assert!(!editor.is_dirty());
+
+        let reopened = Editor::open(&path).unwrap();
+        assert_eq!(reopened.text(), "first\nsecond");
+        assert_eq!(reopened.cursor(), Position::new(0, 0));
+        assert!(!reopened.can_undo());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn saving_without_a_path_is_an_error() {
+        let editor = editor_with("x");
+        assert!(matches!(editor.save_file(), Err(EditorError::NoPath)));
+    }
+}

@@ -1,0 +1,16 @@
+[package]
+name = "editor-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Scriptable command-line front-end over the editor core"
+
+[[bin]]
+name = "edit"
+path = "src/main.rs"
+
+[dependencies]
+editor-core.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
