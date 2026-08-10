@@ -4,8 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-`core/`, `cli/`, `ui_tui/` and `ui_linux/` are implemented and tested. `ui_mac/` and `ui_windows/`
-do not exist yet, and neither does the planned `ui_qt/` (see below).
+`core/`, `cli/`, `ffi/`, `ui_tui/`, `ui_linux/` and `ui_windows/` are implemented. `ui_mac/` does not
+exist yet, and neither does the planned `ui_qt/` (see below).
 
 **MSRV is 1.85** (`rust-version` in the workspace manifest), matching the toolchain on the dev
 machine. This actively constrains dependency choices: `ratatui` is pinned to 0.29 because 0.30 needs
@@ -13,16 +13,13 @@ machine. This actively constrains dependency choices: `ratatui` is pinned to 0.2
 with "rustc 1.85.0 is not supported by the following packages", pin the offending crate with
 `cargo update -p <crate> --precise <older>` rather than raising the MSRV by accident.
 
-Two things the spec calls for are deliberately **not** in the core yet, because nothing needs them:
-UniFFI annotations and a `build.rs` (no foreign shell exists to consume bindings), and a tokio
-runtime (no background work exists — every operation is synchronous and fast). `Editor` is already
-shaped for UniFFI: an opaque object with interior mutability, `&self` methods, and plain scalars
-across the boundary.
+The core still has **no tokio runtime**, because nothing needs one — every operation is synchronous
+and fast. Add it when the core gains work that must not block a UI thread.
 
 ## Commands
 
 ```sh
-cargo test --workspace          # 52 tests; needs libgtk-4-dev + libadwaita-1-dev for ui_linux
+cargo test --workspace          # 58 tests; needs libgtk-4-dev + libadwaita-1-dev for ui_linux
 cargo test -p editor-core       # one crate
 cargo test undo                 # single test by name substring
 cargo run -p editor-cli -- --help
@@ -61,21 +58,22 @@ the core differently, and this split is the main thing to keep straight:
 - **Rust shells** (`cli/`, `ui_tui/`, `ui_linux/`, and `ui_qt/` if it uses `cxx-qt`) depend on
   `core` as an ordinary Cargo dependency and call its public API directly. No FFI, no bindings, no
   translation layer.
-- **Foreign shells** (`ui_mac/`, `ui_windows/`) reach the core through UniFFI-generated bindings.
-  macOS builds the core as an `.xcframework` and consumes generated Swift; Windows builds a `.dll`
-  and consumes generated C# (via `uniffi-bindgen-cs`). A `build.rs` in `core/` generates the Swift
-  and C# scaffolding during `cargo build`.
+- **Foreign shells** (`ui_windows/`, and `ui_mac/` when it exists) reach the core through
+  UniFFI-generated bindings produced from the **`ffi/` crate**, not from `core` directly. Windows
+  builds `editor_ffi.dll` and consumes generated C#; macOS will build an `.xcframework` and consume
+  generated Swift.
 
 Layout (Cargo workspace at the root; ✅ exists, ⬜ planned):
 
 ```
 core/         ✅ editor-core  — Rust logic, state, undo history
 cli/          ✅ editor-cli   — the `edit` binary
+ffi/          ✅ editor-ffi   — UniFFI facade + a C# smoke test of the boundary
 ui_tui/       ✅ editor-tui   — the `edit-tui` binary (ratatui)
 ui_linux/     ✅ editor-gtk   — the `edit-gtk` binary (GTK4 + libadwaita)
+ui_windows/   ✅ EditorApp    — C# / WinUI 3, consuming generated bindings
 ui_qt/        ⬜ Qt shell (see "Planned: the Qt shell")
 ui_mac/       ⬜ Xcode project, SwiftUI/AppKit + generated Swift bindings
-ui_windows/   ⬜ Visual Studio project, C#/WinUI 3 + generated C# bindings
 ```
 
 `ui_linux/` is GTK/GNOME-specific despite the name. Once `ui_qt/` exists — Qt runs on all three
@@ -181,7 +179,8 @@ another.
 ## CI
 
 Every shell gets its own GitHub Actions workflow that builds it: `core-cli.yml` (three OS runners
-plus one workspace-wide fmt/clippy job), `tui.yml` (three OS runners), `linux.yml` (Ubuntu only).
+plus one workspace-wide fmt/clippy job), `tui.yml` (three OS runners), `linux.yml` (Ubuntu only),
+`windows.yml` (Windows only — Rust cdylib, then bindings, then the FFI smoke test, then the app).
 
 Two traps when adding a shell with system dependencies: the shared jobs must stop using
 `--workspace` where the new crate cannot build (the core/CLI test job names its crates for exactly
@@ -246,6 +245,45 @@ never as a direct dependency, so the versions cannot drift.
 
 `keymap.rs` is deliberately widget-free — key/modifier in, `UiAction` out — which is why it can be
 unit-tested with no display, and it is the pattern the Qt shell should copy.
+
+## The FFI layer (`ffi/`) and the Windows shell (`ui_windows/`)
+
+**The UniFFI annotations live in `ffi/`, not in `core/`** — a deliberate departure from the original
+spec. `Editor` takes `impl AsRef<Path>` and returns `PathBuf`, `char` and `Option<PathBuf>`, none of
+which cross an FFI boundary; exporting it directly would mean degrading the Rust API to Strings and
+non-generic signatures for the benefit of foreign callers. `EditorHandle` in `ffi/` is a thin facade
+— every method forwards to exactly one core call, so there is nowhere for behaviour to drift — and
+the Rust shells never compile UniFFI at all.
+
+Versions are coupled and must be bumped together: **`uniffi` in `Cargo.toml` and the
+`uniffi-bindgen-cs` tag in `.github/workflows/windows.yml`** (currently 0.31 / `v0.11.0+v0.31.0`).
+The generator lags upstream uniffi, so uniffi's latest release is usually *not* the one to use.
+
+Regenerating bindings by hand:
+
+```sh
+cargo build --release -p editor-ffi
+cargo install uniffi-bindgen-cs --git https://github.com/NordSecurity/uniffi-bindgen-cs \
+  --tag v0.11.0+v0.31.0
+uniffi-bindgen-cs --library target/release/libeditor_ffi.so --out-dir ui_windows/Generated
+```
+
+- **The generated types are `internal`.** They must be compiled *into* the consuming assembly; a
+  project reference will not see them. Both `ui_windows/` and `ffi/csharp-smoke/` include the
+  generated `.cs` as a source file, and `ui_windows/Generated/` is gitignored.
+- **`ffi/csharp-smoke/` is where the boundary is actually tested.** It is a console app, so it runs
+  on Linux against `libeditor_ffi.so` exactly as it runs on Windows against `editor_ffi.dll` — which
+  makes the FFI layer verifiable without a Windows machine. If it passes and the WinUI app
+  misbehaves, the bug is in XAML, not the bindings. Run it locally with
+  `LD_LIBRARY_PATH=target/release dotnet run --project ffi/csharp-smoke`.
+- **Positions stay 0-based across the boundary.** Each shell adds one for display.
+- The WinUI `TextBox` is read-only and rendered from `Viewport`, for the same reason the GTK
+  `TextView` is: letting the control edit itself would create a second source of truth. `KeyDown`
+  handles navigation and editing keys, `CharacterReceived` handles text (skipped while Ctrl is
+  down, or Ctrl+S would type a control character), and shortcuts are `KeyboardAccelerator`s.
+- The app is **unpackaged** (`WindowsPackageType=None`) so CI can build it without signing
+  certificates. `editor_ffi.dll` is copied next to the executable by the csproj.
+- Known gap: no mouse-wheel scrolling — the viewport moves only via `follow_cursor`.
 
 ## Planned: the Qt shell (`ui_qt/`)
 

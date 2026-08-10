@@ -1,0 +1,54 @@
+name: ui_windows
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Must match the `uniffi` version in Cargo.toml — the generator and the runtime
+  # share a wire format and will not tolerate a mismatch.
+  BINDGEN_TAG: v0.11.0+v0.31.0
+
+jobs:
+  # WinUI 3 needs Windows, and the cdylib the C# loads must be built for Windows
+  # too. Nothing here is cross-compiled from Linux.
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build the core as editor_ffi.dll
+        run: cargo build --release -p editor-ffi
+
+      - name: Install uniffi-bindgen-cs
+        run: cargo install uniffi-bindgen-cs --git https://github.com/NordSecurity/uniffi-bindgen-cs --tag ${{ env.BINDGEN_TAG }} --locked
+
+      - name: Generate the C# bindings
+        run: uniffi-bindgen-cs --library target/release/editor_ffi.dll --out-dir ui_windows/Generated
+
+      # Proves the boundary works on Windows before any XAML is involved: if this
+      # passes and the app misbehaves, the bug is in the UI, not the bindings.
+      - name: FFI smoke test
+        run: |
+          $env:PATH = "$PWD\target\release;$env:PATH"
+          dotnet run --project ffi/csharp-smoke/EditorFfi.Smoke.csproj -c Release
+
+      - name: Build the WinUI app
+        run: dotnet build ui_windows/EditorApp.csproj -c Release -p:Platform=x64
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: edit-winui-x64
+          path: ui_windows/bin/x64/Release/net8.0-windows10.0.19041.0/
+          if-no-files-found: error

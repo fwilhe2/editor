@@ -1,4 +1,4 @@
-name: core + cli
+name: core + cli + ffi
 
 on:
   push:
@@ -29,7 +29,7 @@ jobs:
       # Named crates, not --workspace: ui_linux needs GTK4 and would fail on the
       # macOS and Windows runners.
       - name: Test
-        run: cargo test -p editor-core -p editor-cli --all-targets
+        run: cargo test -p editor-core -p editor-cli -p editor-ffi --all-targets
 
       - name: Build the CLI
         run: cargo build --release -p editor-cli

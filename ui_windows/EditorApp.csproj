@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Unpackaged WinUI 3 (WindowsPackageType=None): no MSIX, so CI can build it
+    without signing certificates.
+
+    The generated UniFFI bindings under Generated/ are picked up by the default
+    C# globbing. They declare their types `internal`, so they must be compiled
+    into this assembly — a project reference would not work.
+  -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>EditorApp</RootNamespace>
+    <AssemblyName>EditorApp</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64;ARM64</Platforms>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+
+    <!-- The Rust cdylib, built on this machine — never cross-compiled. -->
+    <EditorFfiDll Condition="'$(EditorFfiDll)' == ''">$(MSBuildThisFileDirectory)..\target\release\editor_ffi.dll</EditorFfiDll>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.*" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- P/Invoke looks for editor_ffi.dll beside the executable. -->
+    <None Include="$(EditorFfiDll)" Condition="Exists('$(EditorFfiDll)')">
+      <Link>editor_ffi.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

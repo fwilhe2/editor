@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "cli", "ui_tui", "ui_linux"]
+members = ["core", "cli", "ffi", "ui_tui", "ui_linux"]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,3 +24,5 @@ ratatui = "0.29"
 libadwaita = { version = "0.7", features = ["v1_5"] }
 # Carries core notifications from the observer onto the GTK main context.
 async-channel = "2"
+# Pinned to what uniffi-bindgen-cs v0.11.0 targets; the two must match exactly.
+uniffi = "0.31"
