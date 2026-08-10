@@ -320,6 +320,15 @@ swift build --package-path ui_mac --product FfiSmoke -Xlinker "$PWD/target/relea
   knows nothing about the document — from taking ⌘Z.
 - Known gap: no scrolling by mouse or trackpad; the viewport follows the caret only.
 
+## Planned: the browser shell (`ui_web/`)
+
+Not written. The core is pure Rust with no platform assumptions, so it already compiles to
+`wasm32-unknown-unknown`; a web shell would reach it through **`wasm-bindgen`, not UniFFI**, making a
+third class of shell alongside "Rust direct" and "UniFFI foreign". `get_viewport` is the part worth
+proving there — a DOM renderer is the furthest thing from the rope, and if the viewport API survives
+it, the boundary is right. The web has its own conventions; treat it as a platform to respect, not
+as the excuse to stop respecting any.
+
 ## Planned: the Qt shell (`ui_qt/`)
 
 Not written yet. Two things have already been done in anticipation of it: `follow_cursor` was moved

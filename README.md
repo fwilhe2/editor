@@ -9,11 +9,44 @@ cursor movement, undo/redo, save — because the point is not the editor. The po
 drives five very different UIs across three operating systems, two of them across an FFI boundary,
 without any of them owning a byte of document state.
 
+**This is a work in progress.** The argument below is the reason it exists.
+
 [![core + cli + ffi](https://github.com/fwilhe2/editor/actions/workflows/core-cli.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/core-cli.yml)
 [![ui_tui](https://github.com/fwilhe2/editor/actions/workflows/tui.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/tui.yml)
 [![ui_linux](https://github.com/fwilhe2/editor/actions/workflows/linux.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/linux.yml)
 [![ui_windows](https://github.com/fwilhe2/editor/actions/workflows/windows.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/windows.yml)
 [![ui_mac](https://github.com/fwilhe2/editor/actions/workflows/macos.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/macos.yml)
+
+## Why
+
+Cross-platform UI toolkits work. Qt, GTK and wxWidgets have run one codebase on every desktop for
+decades, and there are newer answers in the same spirit — Tauri if you are already writing Rust, or,
+god forbid, Electron. Write the UI once, ship it everywhere. Nothing here disputes that this is
+effective.
+
+But native application UIs are special, and aesthetics matter. Every platform has its own paradigms:
+where the menu bar lives, how a window is decorated, which shortcut redoes an edit, how an app asks
+before discarding your work, what a toolbar is for. An app that honours those conventions feels
+*delightful* — it belongs. An app that imports another platform's conventions always reads as a
+visitor, no matter how good it is otherwise. That is the compromise cross-platform toolkits exist to
+make, and it is a real one.
+
+Historically the choice was economic rather than aesthetic. A genuinely native UI per platform means
+a different language, toolkit, idiom and build system each time — Swift and SwiftUI, C# and WinUI,
+Rust and GTK — plus the discipline to keep them all in step. Very few projects could justify paying
+that three or four times over, so they either limited themselves to one platform or accepted the
+compromise. The decision was made by the budget, not by what would be best for the user.
+
+AI agents change that arithmetic. The per-platform work — learning each toolkit's shape, writing the
+shell, keeping the build honest — is exactly the kind of labour that has become cheap, while the
+part that still needs judgement (what the core owns, where the boundaries go, what each platform's
+conventions actually are) stays small and human-sized. Native on every platform stops being a luxury
+and becomes a normal choice, *provided* the architecture keeps the shells thin and the logic in one
+place.
+
+This repository exists to make that point concretely, with a real core, real bindings and real CI on
+three operating systems — rather than as an argument. The editor is trivial on purpose; the shells
+are the deliverable.
 
 ## How it fits together
 
@@ -32,7 +65,7 @@ without any of them owning a byte of document state.
    edit    edit-tui  edit-gtk      │    │  EditorApp (C#)      EditorApp (Swift)
    CLI      TUI      GTK4/GNOME    │    │  WinUI 3 · Windows   SwiftUI · macOS
                                    │    │
-                              (ui_qt, planned)
+                    planned: ui_qt ┘    └ planned: ui_web (wasm)
 ```
 
 Two classes of shell, and the difference matters:
@@ -181,7 +214,18 @@ This is a prototype, and it is honest about being one. Known gaps:
 - No horizontal scrolling in the TUI; no mouse-wheel scrolling in the GUI shells.
 - Line endings are assumed to be LF.
 - No search, selection, clipboard, multiple documents or syntax highlighting.
-- The Qt shell described in `CLAUDE.md` is planned, not written.
+
+Two more shells are planned, both of which stretch the architecture in a useful direction:
+
+- **Qt** (`ui_qt/`) — a second desktop toolkit, and the KDE/Plasma conventions that come with it.
+  Likely via [`cxx-qt`](https://github.com/KDAB/cxx-qt), which would keep it a plain Rust crate
+  depending on the core directly, like the GTK and terminal shells. See `CLAUDE.md` for the
+  trade-off against a C++ Qt app, which would need a third binding mechanism.
+- **Browser / WebAssembly** (`ui_web/`) — the core is pure Rust with no platform assumptions, so it
+  compiles to `wasm32-unknown-unknown` as-is. A web shell would reach it through `wasm-bindgen`
+  rather than UniFFI, adding a third class of shell and proving the same viewport API works when the
+  UI is a DOM. It is also the honest test of the argument above: the web is one more platform with
+  conventions of its own, not an excuse to stop having any.
 
 `CLAUDE.md` documents the architecture in more depth, including the invariants worth preserving and
 the traps each shell hides.
