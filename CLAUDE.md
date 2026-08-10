@@ -4,8 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-`core/`, `cli/` and `ui_tui/` are implemented and tested. `ui_linux/`, `ui_mac/` and `ui_windows/`
-do not exist yet.
+`core/`, `cli/`, `ui_tui/` and `ui_linux/` are implemented and tested. `ui_mac/` and `ui_windows/`
+do not exist yet, and neither does the planned `ui_qt/` (see below).
 
 **MSRV is 1.85** (`rust-version` in the workspace manifest), matching the toolchain on the dev
 machine. This actively constrains dependency choices: `ratatui` is pinned to 0.29 because 0.30 needs
@@ -22,17 +22,19 @@ across the boundary.
 ## Commands
 
 ```sh
-cargo test --workspace          # 42 tests: core, CLI end-to-end, TUI render/key tests
+cargo test --workspace          # 52 tests; needs libgtk-4-dev + libadwaita-1-dev for ui_linux
 cargo test -p editor-core       # one crate
 cargo test undo                 # single test by name substring
 cargo run -p editor-cli -- --help
 cargo run -p editor-tui -- FILE
+cargo run -p editor-gtk -- FILE
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-CI runs all of the above. `rustfmt` and `clippy` may not be installed locally (this machine has no
-`rustup`); CI is the enforcement point.
+`--workspace` only works on Linux with the GTK development packages installed; CI builds `ui_linux`
+in its own Linux-only job and tests the other crates by name. `rustfmt` and `clippy` may not be
+installed locally (this machine has no `rustup`); CI is the enforcement point.
 
 Driving the TUI non-interactively, for when a change needs checking in a real terminal — always
 under `timeout`, since `event::read()` blocks forever if the keys arrive before raw mode engages:
@@ -56,8 +58,9 @@ All editor logic, state, and I/O live in one pure-Rust crate (`core/`). Every UI
 renderer and event forwarder — it holds no editor state of its own. Two classes of shell consume
 the core differently, and this split is the main thing to keep straight:
 
-- **Rust shells** (`cli/`, `ui_tui/`, `ui_linux/`) depend on `core` as an ordinary Cargo dependency
-  and call its public API directly. No FFI, no bindings, no translation layer.
+- **Rust shells** (`cli/`, `ui_tui/`, `ui_linux/`, and `ui_qt/` if it uses `cxx-qt`) depend on
+  `core` as an ordinary Cargo dependency and call its public API directly. No FFI, no bindings, no
+  translation layer.
 - **Foreign shells** (`ui_mac/`, `ui_windows/`) reach the core through UniFFI-generated bindings.
   macOS builds the core as an `.xcframework` and consumes generated Swift; Windows builds a `.dll`
   and consumes generated C# (via `uniffi-bindgen-cs`). A `build.rs` in `core/` generates the Swift
@@ -69,10 +72,14 @@ Layout (Cargo workspace at the root; ✅ exists, ⬜ planned):
 core/         ✅ editor-core  — Rust logic, state, undo history
 cli/          ✅ editor-cli   — the `edit` binary
 ui_tui/       ✅ editor-tui   — the `edit-tui` binary (ratatui)
-ui_linux/     ⬜ gtk4-rs UI (pure Rust)
+ui_linux/     ✅ editor-gtk   — the `edit-gtk` binary (GTK4 + libadwaita)
+ui_qt/        ⬜ Qt shell (see "Planned: the Qt shell")
 ui_mac/       ⬜ Xcode project, SwiftUI/AppKit + generated Swift bindings
 ui_windows/   ⬜ Visual Studio project, C#/WinUI 3 + generated C# bindings
 ```
+
+`ui_linux/` is GTK/GNOME-specific despite the name. Once `ui_qt/` exists — Qt runs on all three
+platforms — renaming it to `ui_gtk/` would be more honest. The spec's name is kept for now.
 
 ## Core design constraints
 
@@ -98,7 +105,7 @@ Shells hold an `Arc<Editor>` (`core/src/lib.rs`) and call:
 - documents — `open`, `load_file`, `save_file`, `save_file_as`
 - editing — `handle_input(char)`, `insert_text(&str)`, `handle_backspace()`, `undo()`, `redo()`
 - cursor/view — `move_cursor(Direction)`, `set_cursor(Position)`, `cursor()`,
-  `get_viewport(start, end)`, `scroll_offset()` / `set_scroll_offset()`
+  `get_viewport(start, end)`, `scroll_offset()` / `set_scroll_offset()`, `follow_cursor(height)`
 - inspection — `line_count`, `char_count`, `is_dirty`, `path`, `can_undo`, `can_redo`
 - notification — `set_observer(Arc<dyn EditorObserver>)`
 - persistence for stateless callers — `session()` / `restore_session(Session)`
@@ -120,6 +127,9 @@ Non-obvious invariants in the implementation:
   line rather than returning nothing — a stale scroll offset must never blank the view.
 - **Undo/redo cursor placement falls out of `Action::inverse`**, not from special-casing: undoing an
   `Insert` applies a `Delete` and lands the cursor at `at`.
+- **`follow_cursor` deliberately does not notify when the offset does not move.** Shells call it
+  while laying out a frame; an unconditional notification would have every repaint request the next
+  one, forever. There is a test pinning this.
 - Line terminators are assumed to be LF. Backspace removes a single `char`, so a CRLF file loses the
   `\n` and keeps a stray `\r`. Acceptable for the prototype; fix in `EditorState::backspace` if it
   ever matters.
@@ -170,9 +180,13 @@ another.
 
 ## CI
 
-Every shell gets its own GitHub Actions workflow that builds it. `core-cli.yml` covers the core and
-the CLI (tests on all three OS runners, plus a single fmt/clippy job for the whole workspace);
-`tui.yml` covers `ui_tui` the same way.
+Every shell gets its own GitHub Actions workflow that builds it: `core-cli.yml` (three OS runners
+plus one workspace-wide fmt/clippy job), `tui.yml` (three OS runners), `linux.yml` (Ubuntu only).
+
+Two traps when adding a shell with system dependencies: the shared jobs must stop using
+`--workspace` where the new crate cannot build (the core/CLI test job names its crates for exactly
+this reason), and the fmt/clippy job *does* lint the whole workspace, so it needs those system
+packages installed even though it produces no binaries.
 
 **Cross-compilation is not an option** — each app builds on its own OS runner. macOS builds on
 `macos-*` (Xcode), Windows on `windows-*` (MSBuild / Windows App SDK), Linux and the pure-Rust
@@ -207,3 +221,50 @@ Ctrl+Q on a dirty document warns once and quits on a second press; any other key
 
 The `TestBackend` tests in `app.rs` render into an off-screen buffer and assert on the text, which
 covers key routing, scrolling and the status bar without a terminal.
+
+## The GTK shell (`ui_linux/`, binary `edit-gtk`)
+
+GTK4 through libadwaita, following the GNOME HIG: `AdwHeaderBar`, `AdwAlertDialog` for unsaved
+changes on close, `AdwToastOverlay` for save feedback. **gtk is reached through `libadwaita::gtk`**,
+never as a direct dependency, so the versions cannot drift.
+
+- **The `GtkTextView` is a renderer, not the document.** It is `editable(false)` with
+  `cursor_visible(true)`, and the key controller runs in the **Capture** phase so GTK never sees a
+  key we handle. Every repaint refills the buffer from `get_viewport` and places the caret from the
+  core's cursor. This is the single most important thing to preserve: the moment the TextView is
+  allowed to edit itself, there are two sources of truth.
+- **Refreshes come from the core's observer.** `Notifier` forwards `state_changed` over an
+  `async_channel` that a `spawn_future_local` task drains, because `EditorObserver` is `Send + Sync`
+  and GTK widgets are neither. The drain loop coalesces bursts, so one keystroke is one repaint.
+- **`refresh()` renders from `scroll_offset` and never calls `follow_cursor`.** Key handling calls
+  `follow_cursor` explicitly. If `refresh` did it, dragging the scrollbar away from the cursor would
+  snap straight back.
+- **`syncing: Cell<bool>`** suppresses the adjustment's `value-changed` while `refresh` is writing
+  to it, so the widget and the core do not chase each other.
+- `visible_lines()` derives the viewport height from Pango metrics and the allocated height. Before
+  the first allocation that is 0, hence the one-line floor and the repaint on `default-height`.
+
+`keymap.rs` is deliberately widget-free — key/modifier in, `UiAction` out — which is why it can be
+unit-tested with no display, and it is the pattern the Qt shell should copy.
+
+## Planned: the Qt shell (`ui_qt/`)
+
+Not written yet. Two things have already been done in anticipation of it: `follow_cursor` was moved
+out of the TUI into the core (three shells must not each invent a scroll rule), and the GTK shell
+keeps its key mapping in a widget-free, testable module.
+
+**Route to prefer: `cxx-qt`.** It puts the Qt object model on the Rust side, so `ui_qt/` stays a
+plain Cargo crate depending on `core` directly — no FFI, the same class of shell as the TUI and GTK
+ones. The alternative, a C++ Qt application calling into the core, needs a hand-rolled C ABI or a
+`cxx` bridge: **UniFFI has no C++ target**, so that route adds a third binding mechanism alongside
+"Rust direct" and "UniFFI foreign". Only take it if a C++ codebase is a requirement.
+
+When it is built:
+
+- Qt is cross-platform, so it gets built on all three OS runners like the TUI, never cross-compiled.
+  Qt itself comes from `jurplel/install-qt-action` or the distro packages.
+- `QPlainTextEdit`/`QTextDocument` has exactly the GTK problem — it owns a document. Make it
+  read-only and drive it from `get_viewport`, as `ui_linux/` does.
+- Follow the KDE HIG on Plasma. Do not copy the GNOME shortcut set wholesale; they agree on
+  Ctrl+S/Z/Shift+Z, but the window furniture differs.
+- Parity still applies: nothing may appear in the Qt shell that the CLI cannot do.

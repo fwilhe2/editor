@@ -225,6 +225,23 @@ impl EditorState {
         }
     }
 
+    /// Where the scroll offset has to be for the cursor to be visible in a viewport
+    /// `height` lines tall. Returns the current offset when nothing needs to move.
+    pub(crate) fn wanted_offset(&self, height: u64) -> u64 {
+        if height == 0 {
+            return self.scroll_offset;
+        }
+        let cursor = self.clamp(self.cursor);
+        let offset = if cursor.line < self.scroll_offset {
+            cursor.line
+        } else if cursor.line >= self.scroll_offset + height {
+            cursor.line + 1 - height
+        } else {
+            self.scroll_offset
+        };
+        offset.min(self.line_count().saturating_sub(1))
+    }
+
     pub(crate) fn line_count(&self) -> u64 {
         self.text.len_lines() as u64
     }

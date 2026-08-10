@@ -1,0 +1,17 @@
+[package]
+name = "editor-gtk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GTK4 / libadwaita shell over the editor core"
+
+[[bin]]
+name = "edit-gtk"
+path = "src/main.rs"
+
+[dependencies]
+editor-core.workspace = true
+# gtk is reached through `libadwaita::gtk`, so the two cannot drift apart.
+libadwaita.workspace = true
+async-channel.workspace = true

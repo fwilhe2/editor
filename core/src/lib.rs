@@ -131,6 +131,26 @@ impl Editor {
         self.state.read().unwrap().scroll_offset
     }
 
+    /// Scroll just enough to keep the cursor visible in a viewport `height` lines
+    /// tall, and return the resulting offset.
+    ///
+    /// Every graphical shell needs this and none of them should invent their own
+    /// rule, so it lives here rather than in the TUI, GTK and Qt shells separately.
+    ///
+    /// Deliberately does not notify when the offset does not move: shells call this
+    /// while laying out a frame, and an unconditional notification would have each
+    /// redraw request the next one forever.
+    pub fn follow_cursor(&self, height: u64) -> u64 {
+        let (current, wanted) = {
+            let state = self.state.read().unwrap();
+            (state.scroll_offset, state.wanted_offset(height))
+        };
+        if wanted != current {
+            self.mutate(|state| state.scroll_offset = wanted);
+        }
+        wanted
+    }
+
     pub fn set_scroll_offset(&self, offset: u64) {
         self.mutate(|state| {
             let last_line = state.line_count().saturating_sub(1);
@@ -414,6 +434,54 @@ mod tests {
         editor.set_observer(reader);
         editor.handle_input('a');
         assert_eq!(editor.text(), "a");
+    }
+
+    #[test]
+    fn follow_cursor_scrolls_only_when_the_cursor_leaves_the_view() {
+        let editor = editor_with("l0\nl1\nl2\nl3\nl4\nl5");
+
+        editor.set_cursor(Position::new(0, 0));
+        assert_eq!(editor.follow_cursor(3), 0);
+
+        // Inside the view: no movement.
+        editor.set_cursor(Position::new(2, 0));
+        assert_eq!(editor.follow_cursor(3), 0);
+
+        // Below it: scroll just far enough to bring the cursor onto the last row.
+        editor.set_cursor(Position::new(4, 0));
+        assert_eq!(editor.follow_cursor(3), 2);
+
+        // Above it: the cursor's line becomes the first row.
+        editor.set_cursor(Position::new(1, 0));
+        assert_eq!(editor.follow_cursor(3), 1);
+    }
+
+    #[test]
+    fn follow_cursor_is_silent_when_nothing_moves() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Counter(AtomicUsize);
+        impl EditorObserver for Counter {
+            fn state_changed(&self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let editor = editor_with("l0\nl1\nl2");
+        let counter = Arc::new(Counter(AtomicUsize::new(0)));
+        editor.set_observer(counter.clone());
+
+        // A shell calls this every frame; notifying here would make each redraw
+        // schedule the next one and spin forever.
+        editor.follow_cursor(10);
+        editor.follow_cursor(10);
+        assert_eq!(counter.0.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn follow_cursor_tolerates_a_zero_height_view() {
+        let editor = editor_with("l0\nl1");
+        assert_eq!(editor.follow_cursor(0), 0);
     }
 
     #[test]

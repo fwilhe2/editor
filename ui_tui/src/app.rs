@@ -138,9 +138,7 @@ impl App {
         let [text_area, status_area] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
 
-        self.follow_cursor(u64::from(text_area.height));
-
-        let start = self.editor.scroll_offset();
+        let start = self.editor.follow_cursor(u64::from(text_area.height));
         let viewport = self
             .editor
             .get_viewport(start, start + u64::from(text_area.height));
@@ -160,26 +158,6 @@ impl App {
             let column = cursor.column.min(u64::from(text_area.width - 1)) as u16;
             frame.set_cursor_position((text_area.x + column, text_area.y + row));
         }
-    }
-
-    /// Scroll so the cursor stays visible. The offset lives in the core, so every
-    /// shell scrolls by the same rule.
-    fn follow_cursor(&self, height: u64) {
-        if height == 0 {
-            return;
-        }
-        let cursor = self.editor.cursor();
-        let offset = self.editor.scroll_offset();
-
-        let wanted = if cursor.line < offset {
-            cursor.line
-        } else if cursor.line >= offset + height {
-            cursor.line + 1 - height
-        } else {
-            return;
-        };
-
-        self.editor.set_scroll_offset(wanted);
     }
 
     fn status_bar(&self, viewport: &editor_core::Viewport) -> Paragraph<'_> {

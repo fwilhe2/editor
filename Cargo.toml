@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "cli", "ui_tui"]
+members = ["core", "cli", "ui_tui", "ui_linux"]
 
 [workspace.package]
 version = "0.1.0"
@@ -19,3 +19,8 @@ thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 # 0.30 requires rustc 1.88; 0.29 is the newest that builds on our MSRV.
 ratatui = "0.29"
+# Pulls in gtk4 as `libadwaita::gtk`; GNOME HIG widgets come from libadwaita itself.
+# v1_5 is what AdwAlertDialog needs, and matches the runtime on ubuntu-24.04.
+libadwaita = { version = "0.7", features = ["v1_5"] }
+# Carries core notifications from the observer onto the GTK main context.
+async-channel = "2"

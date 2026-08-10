@@ -1,0 +1,40 @@
+name: ui_linux
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # GTK4 + libadwaita, so Linux only — and built on Linux, never cross-compiled.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GTK4 and libadwaita
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The keymap tests are the ones that matter here and they need no display,
+      # so nothing in this job requires a running compositor.
+      - name: Test
+        run: cargo test -p editor-gtk --all-targets
+
+      - name: Build
+        run: cargo build --release -p editor-gtk
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: edit-gtk-ubuntu-latest
+          path: target/release/edit-gtk
+          if-no-files-found: error

@@ -26,8 +26,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
+      # Named crates, not --workspace: ui_linux needs GTK4 and would fail on the
+      # macOS and Windows runners.
       - name: Test
-        run: cargo test --workspace --all-targets
+        run: cargo test -p editor-core -p editor-cli --all-targets
 
       - name: Build the CLI
         run: cargo build --release -p editor-cli
@@ -52,6 +54,13 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # Clippy covers the whole workspace, so this job needs the GTK shell's
+      # system dependencies even though it builds nothing for release.
+      - name: Install GTK4 and libadwaita
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev
 
       - name: Format
         run: cargo fmt --all --check
