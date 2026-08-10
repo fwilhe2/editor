@@ -3,7 +3,6 @@
 // through the UniFFI bindings.
 
 using System;
-using Microsoft.UI.Dispatching;
 using Microsoft.UI.Input;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -12,6 +11,9 @@ using Microsoft.UI.Xaml.Input;
 using uniffi.editor_ffi;
 using Windows.System;
 using Windows.UI.Core;
+
+// Windows.System also defines a DispatcherQueue; the WinUI one is the right one here.
+using DispatcherQueue = Microsoft.UI.Dispatching.DispatcherQueue;
 
 namespace EditorApp;
 
