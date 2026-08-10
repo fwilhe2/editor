@@ -1,0 +1,16 @@
+[package]
+name = "editor-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Terminal UI shell over the editor core"
+
+[[bin]]
+name = "edit-tui"
+path = "src/main.rs"
+
+[dependencies]
+editor-core.workspace = true
+# crossterm is used through `ratatui::crossterm`, so the two can never drift apart.
+ratatui.workspace = true
