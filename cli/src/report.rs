@@ -90,7 +90,10 @@ impl Report {
     pub fn print(&self, format: Format) {
         match format {
             Format::Json => {
-                println!("{}", serde_json::to_string(self).expect("report is serializable"))
+                println!(
+                    "{}",
+                    serde_json::to_string(self).expect("report is serializable")
+                )
             }
             Format::Text => self.print_text(),
         }

@@ -71,7 +71,16 @@ fn insert_writes_the_document_before_exiting() {
     let sandbox = Sandbox::new("insert");
     let file = sandbox.file("doc.txt", "hello\n");
 
-    ok(&["insert", &s(&file), "--text", "brave ", "--line", "1", "--col", "1"]);
+    ok(&[
+        "insert",
+        &s(&file),
+        "--text",
+        "brave ",
+        "--line",
+        "1",
+        "--col",
+        "1",
+    ]);
     assert_eq!(contents(&file), "brave hello\n");
 }
 
@@ -81,7 +90,16 @@ fn addressing_is_one_based() {
     let file = sandbox.file("doc.txt", "ab\ncd\n");
 
     // Line 2, column 2 is between 'c' and 'd'.
-    ok(&["insert", &s(&file), "--text", "X", "--line", "2", "--col", "2"]);
+    ok(&[
+        "insert",
+        &s(&file),
+        "--text",
+        "X",
+        "--line",
+        "2",
+        "--col",
+        "2",
+    ]);
     assert_eq!(contents(&file), "ab\ncXd\n");
 }
 
@@ -90,7 +108,10 @@ fn view_prints_bare_lines_and_clamps_the_range() {
     let sandbox = Sandbox::new("view");
     let file = sandbox.file("doc.txt", "one\ntwo\nthree\n");
 
-    assert_eq!(ok(&["view", &s(&file), "--start", "2", "--lines", "2"]), "two\nthree\n");
+    assert_eq!(
+        ok(&["view", &s(&file), "--start", "2", "--lines", "2"]),
+        "two\nthree\n"
+    );
 
     let report = json(&["--format", "json", "view", &s(&file)]);
     assert_eq!(report["start_line"], 1);
@@ -104,11 +125,33 @@ fn a_session_carries_the_cursor_between_invocations() {
     let file = sandbox.file("doc.txt", "abc\n");
     let session = sandbox.path("s.json");
 
-    ok(&["--session", &s(&session), "move", &s(&file), "right", "--times", "2"]);
-    let report = json(&["--format", "json", "--session", &s(&session), "info", &s(&file)]);
+    ok(&[
+        "--session",
+        &s(&session),
+        "move",
+        &s(&file),
+        "right",
+        "--times",
+        "2",
+    ]);
+    let report = json(&[
+        "--format",
+        "json",
+        "--session",
+        &s(&session),
+        "info",
+        &s(&file),
+    ]);
     assert_eq!(report["cursor"]["column"], 3);
 
-    ok(&["--session", &s(&session), "insert", &s(&file), "--text", "-X-"]);
+    ok(&[
+        "--session",
+        &s(&session),
+        "insert",
+        &s(&file),
+        "--text",
+        "-X-",
+    ]);
     assert_eq!(contents(&file), "ab-X-c\n");
 }
 
@@ -121,7 +164,16 @@ fn undo_and_redo_travel_through_the_session() {
     let (session, doc) = (s(&session), s(&file));
 
     ok(&[
-        "--session", &session, "insert", &doc, "--text", "X", "--line", "1", "--col", "1",
+        "--session",
+        &session,
+        "insert",
+        &doc,
+        "--text",
+        "X",
+        "--line",
+        "1",
+        "--col",
+        "1",
     ]);
     assert_eq!(contents(&file), "Xbase\n");
 
@@ -149,7 +201,14 @@ fn a_no_op_undo_reports_no_change_and_still_succeeds() {
     let file = sandbox.file("doc.txt", "base\n");
     let session = sandbox.path("s.json");
 
-    let report = json(&["--format", "json", "--session", &s(&session), "undo", &s(&file)]);
+    let report = json(&[
+        "--format",
+        "json",
+        "--session",
+        &s(&session),
+        "undo",
+        &s(&file),
+    ]);
     assert_eq!(report["changed"], false);
     assert_eq!(report["written"], false);
     assert_eq!(contents(&file), "base\n");
@@ -160,7 +219,16 @@ fn backspace_repeats_and_stops_at_the_document_start() {
     let sandbox = Sandbox::new("backspace");
     let file = sandbox.file("doc.txt", "abcdef");
 
-    ok(&["backspace", &s(&file), "--line", "1", "--col", "4", "--times", "10"]);
+    ok(&[
+        "backspace",
+        &s(&file),
+        "--line",
+        "1",
+        "--col",
+        "4",
+        "--times",
+        "10",
+    ]);
     assert_eq!(contents(&file), "def");
 }
 
@@ -171,8 +239,19 @@ fn dry_run_reports_the_result_without_touching_disk() {
     let session = sandbox.path("s.json");
 
     let report = json(&[
-        "--format", "json", "--dry-run", "--session", &s(&session),
-        "insert", &s(&file), "--text", "X", "--line", "1", "--col", "1",
+        "--format",
+        "json",
+        "--dry-run",
+        "--session",
+        &s(&session),
+        "insert",
+        &s(&file),
+        "--text",
+        "X",
+        "--line",
+        "1",
+        "--col",
+        "1",
     ]);
     assert_eq!(report["changed"], true);
     assert_eq!(report["written"], false);
@@ -192,7 +271,12 @@ fn text_can_come_from_stdin() {
         .unwrap();
     {
         use std::io::Write;
-        child.stdin.as_mut().unwrap().write_all(b"piped in").unwrap();
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"piped in")
+            .unwrap();
     }
     assert!(child.wait().unwrap().success());
     assert_eq!(contents(&file), "piped in");

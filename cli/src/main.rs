@@ -191,7 +191,11 @@ fn run(cli: &Cli) -> Result<Report, String> {
         } => {
             let editor = load(file, cli)?;
             place_cursor(&editor, *line, *col);
-            let text = if text == "-" { read_stdin()? } else { text.clone() };
+            let text = if text == "-" {
+                read_stdin()?
+            } else {
+                text.clone()
+            };
             editor.insert_text(&text);
             finish(&editor, cli, !text.is_empty())
         }
