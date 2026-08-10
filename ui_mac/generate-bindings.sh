@@ -27,6 +27,10 @@ trap 'rm -rf "$staging"' EXIT
 cargo run -q --manifest-path "$root/Cargo.toml" -p editor-ffi --bin uniffi-bindgen -- \
     generate --library "$library" --language swift --out-dir "$staging"
 
+# EditorCore holds nothing but the generated file, which is gitignored, so on a
+# fresh clone the directory does not exist yet.
+mkdir -p "$root/ui_mac/Sources/EditorCore" "$root/ui_mac/Sources/EditorFFI/include"
+
 cp "$staging/editor_ffi.swift" "$root/ui_mac/Sources/EditorCore/editor_ffi.swift"
 cp "$staging/editor_ffiFFI.h" "$root/ui_mac/Sources/EditorFFI/include/editor_ffiFFI.h"
 # The generated module map is intentionally not copied: ours is portable.
