@@ -1,4 +1,7 @@
 /target
+# A container build needs its own CARGO_TARGET_DIR, or two toolchains fight over
+# the same fingerprints; see doc/shared-core-native-shell.md.
+/target-container
 **/*.rs.bk
 *.session.json
 .claude/settings.local.json

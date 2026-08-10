@@ -2,6 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+For the pattern itself — how to build an app this way from scratch, rather than how this one is put
+together — see [`doc/shared-core-native-shell.md`](doc/shared-core-native-shell.md).
+
 ## Status
 
 Every shell in the original plan exists: `core/`, `cli/`, `ffi/`, `ui_tui/`, `ui_linux/`,

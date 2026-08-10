@@ -271,7 +271,9 @@ unchanged, and the core's file API grew a filesystem-free half (`load_text` / `s
 the CLI exposes as `import` / `export`, because a capability in one shell alone is a bug.
 
 `CLAUDE.md` documents the architecture in more depth, including the invariants worth preserving and
-the traps each shell hides.
+the traps each shell hides. [`doc/shared-core-native-shell.md`](doc/shared-core-native-shell.md)
+generalises it into a guide for building an app this way from scratch — the rules that carry the
+weight, the order to build in, and how to verify each shell from a Linux or macOS host.
 
 ## License
 
