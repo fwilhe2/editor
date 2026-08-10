@@ -1,14 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["core", "cli", "ffi", "ui_tui", "ui_linux"]
+members = ["core", "cli", "ffi", "ui_tui", "ui_linux", "ui_web"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-# Dependencies are held to what this toolchain can build; bumping this is a
-# deliberate decision, not something a dependency upgrade makes for us.
-rust-version = "1.85"
 
 [workspace.dependencies]
 editor-core = { path = "core" }
@@ -17,8 +14,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
-# 0.30 requires rustc 1.88; 0.29 is the newest that builds on our MSRV.
-ratatui = "0.29"
+ratatui = "0.30"
 # Pulls in gtk4 as `libadwaita::gtk`; GNOME HIG widgets come from libadwaita itself.
 # v1_5 is what AdwAlertDialog needs, and matches the runtime on ubuntu-24.04.
 libadwaita = { version = "0.7", features = ["v1_5"] }
@@ -26,3 +22,11 @@ libadwaita = { version = "0.7", features = ["v1_5"] }
 async-channel = "2"
 # Pinned to what uniffi-bindgen-cs v0.11.0 targets; the two must match exactly.
 uniffi = "0.31"
+# The browser shell's binding mechanism — neither a Cargo dependency on the core
+# (that is how it reaches the core) nor UniFFI, which has no JavaScript target.
+# wasm-bindgen and the `wasm-bindgen` CLI that post-processes the module must be
+# the same version; see .github/workflows/web.yml.
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = "0.3"

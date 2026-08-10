@@ -3,7 +3,6 @@ name = "editor-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-rust-version.workspace = true
 description = "Platform-agnostic editor logic shared by every UI shell"
 
 [lib]

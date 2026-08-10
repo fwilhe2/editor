@@ -78,6 +78,27 @@ impl Editor {
         self.mutate(|state| state.save_to(path.as_ref()))
     }
 
+    /// Open `text` as the document, named `name`, as if it had been read from disk:
+    /// cursor home, history cleared, not dirty. `None` leaves it unnamed.
+    ///
+    /// The counterpart of [`Editor::load_file`] for a shell whose platform does the
+    /// reading — the browser, where a file arrives from the File API as a string and
+    /// there is no path to open. Inserting the text instead would be wrong twice
+    /// over: the document would start dirty, and undo would erase the file.
+    pub fn load_text(&self, name: Option<&str>, text: &str) {
+        self.mutate(|state| state.load_text(name.map(PathBuf::from), text));
+    }
+
+    /// The whole document, marked saved under `name` (`None` keeps the current one).
+    ///
+    /// The counterpart of [`Editor::save_file_as`] for a shell whose platform does
+    /// the writing — the browser hands these bytes to a download. This is the one
+    /// place a shell legitimately takes the entire buffer: saving is not rendering,
+    /// and the read path for rendering is still [`Editor::get_viewport`].
+    pub fn save_to_string(&self, name: Option<&str>) -> String {
+        self.mutate(|state| state.save_to_string(name.map(PathBuf::from)))
+    }
+
     // --- editing --------------------------------------------------------------
 
     /// Insert a single character at the cursor. The keystroke path for UI shells.
@@ -513,6 +534,56 @@ mod tests {
         assert!(!reopened.can_undo());
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn loaded_text_behaves_like_a_file_read_from_disk() {
+        let editor = editor_with("scratch");
+        editor.load_text(Some("notes.txt"), "one\ntwo");
+
+        assert_eq!(editor.text(), "one\ntwo");
+        assert_eq!(editor.cursor(), Position::new(0, 0));
+        assert_eq!(editor.path().unwrap().display().to_string(), "notes.txt");
+        assert!(!editor.is_dirty(), "a freshly loaded document is not dirty");
+        // The previous document's history must not survive the load, or undo would
+        // rewrite text that never came from this file.
+        assert!(!editor.can_undo());
+    }
+
+    #[test]
+    fn loading_text_without_a_name_leaves_the_document_unnamed() {
+        let editor = Editor::new();
+        editor.load_text(None, "text from a browser file picker");
+        assert!(editor.path().is_none());
+        assert!(matches!(editor.save_file(), Err(EditorError::NoPath)));
+    }
+
+    #[test]
+    fn saving_to_a_string_hands_over_the_document_and_clears_dirty() {
+        let editor = editor_with("one\ntwo");
+        assert!(editor.is_dirty());
+
+        assert_eq!(editor.save_to_string(Some("out.txt")), "one\ntwo");
+        assert!(!editor.is_dirty());
+        assert_eq!(editor.path().unwrap().display().to_string(), "out.txt");
+
+        // A later save without a name keeps the one it was saved under.
+        editor.insert_text("!");
+        assert_eq!(editor.save_to_string(None), "one\ntwo!");
+        assert_eq!(editor.path().unwrap().display().to_string(), "out.txt");
+    }
+
+    #[test]
+    fn text_survives_a_round_trip_without_a_filesystem() {
+        let editor = Editor::new();
+        // No trailing newline, so a round trip that "helpfully" adds one is caught.
+        editor.load_text(Some("a.txt"), "first\nsecond");
+        let saved = editor.save_to_string(None);
+
+        let reopened = Editor::new();
+        reopened.load_text(Some("a.txt"), &saved);
+        assert_eq!(reopened.text(), "first\nsecond");
+        assert_eq!(reopened.line_count(), 2);
     }
 
     #[test]

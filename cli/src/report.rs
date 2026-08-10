@@ -40,6 +40,7 @@ pub enum Format {
 #[serde(untagged)]
 pub enum Report {
     View(ViewReport),
+    Export(ExportReport),
     Document(DocumentReport),
 }
 
@@ -51,6 +52,15 @@ pub struct ViewReport {
     pub lines: Vec<String>,
     pub total_lines: u64,
     pub cursor: Cursor,
+}
+
+/// The whole document, byte for byte. Unlike [`ViewReport`] this is not a range of
+/// lines but the exact contents a save would write — the CLI's half of what the
+/// browser shell does when it saves into a download.
+#[derive(Debug, Serialize)]
+pub struct ExportReport {
+    pub path: String,
+    pub text: String,
 }
 
 /// The result of everything else: where the document ended up.
@@ -107,6 +117,9 @@ impl Report {
                     println!("{line}");
                 }
             }
+            // Exactly what is in the document, with nothing added: `edit export`
+            // redirected into a file must reproduce it byte for byte.
+            Report::Export(export) => print!("{}", export.text),
             Report::Document(doc) => {
                 println!(
                     "{}:{}:{}  {} lines, {} chars{}{}",

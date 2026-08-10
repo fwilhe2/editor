@@ -300,6 +300,100 @@ fn new_creates_a_file_and_refuses_to_clobber_one() {
 }
 
 #[test]
+fn export_reproduces_the_document_byte_for_byte() {
+    let sandbox = Sandbox::new("export");
+    // No trailing newline, and a blank line in the middle: `view` would normalise
+    // both away, `export` must not.
+    let file = sandbox.file("doc.txt", "one\n\nthree");
+
+    assert_eq!(ok(&["export", &s(&file)]), "one\n\nthree");
+
+    let report = json(&["--format", "json", "export", &s(&file)]);
+    assert_eq!(report["text"], "one\n\nthree");
+}
+
+#[test]
+fn import_replaces_the_document_and_drops_its_history() {
+    let sandbox = Sandbox::new("import");
+    let file = sandbox.file("doc.txt", "old\n");
+    let session = sandbox.path("s.json");
+
+    ok(&[
+        "--session",
+        &s(&session),
+        "insert",
+        &s(&file),
+        "--text",
+        "X",
+    ]);
+    assert_eq!(contents(&file), "Xold\n");
+
+    let report = json(&[
+        "--format",
+        "json",
+        "--session",
+        &s(&session),
+        "import",
+        &s(&file),
+        "--text",
+        "brand new\n",
+    ]);
+    assert_eq!(report["changed"], true);
+    assert_eq!(report["written"], true);
+    assert_eq!(contents(&file), "brand new\n");
+
+    // The history belonged to the document that was replaced, so it is gone —
+    // undoing into it would resurrect text this file never had.
+    assert_eq!(report["can_undo"], false);
+    let undone = json(&[
+        "--format",
+        "json",
+        "--session",
+        &s(&session),
+        "undo",
+        &s(&file),
+    ]);
+    assert_eq!(undone["changed"], false);
+    assert_eq!(contents(&file), "brand new\n");
+}
+
+#[test]
+fn importing_identical_text_writes_nothing() {
+    let sandbox = Sandbox::new("import-same");
+    let file = sandbox.file("doc.txt", "same\n");
+
+    let report = json(&["--format", "json", "import", &s(&file), "--text", "same\n"]);
+    assert_eq!(report["changed"], false);
+    assert_eq!(report["written"], false);
+}
+
+#[test]
+fn import_and_export_round_trip_through_a_pipe() {
+    let sandbox = Sandbox::new("round-trip");
+    let source = sandbox.file("source.txt", "alpha\nbeta");
+    let target = sandbox.file("target.txt", "");
+
+    let exported = ok(&["export", &s(&source)]);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_edit"))
+        .args(["import", &s(&target), "--text", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(exported.as_bytes())
+            .unwrap();
+    }
+    assert!(child.wait().unwrap().success());
+    assert_eq!(contents(&target), "alpha\nbeta");
+}
+
+#[test]
 fn a_missing_file_is_an_error_not_an_empty_document() {
     let sandbox = Sandbox::new("missing");
     let output = edit(&["view", &s(&sandbox.path("nope.txt"))]);

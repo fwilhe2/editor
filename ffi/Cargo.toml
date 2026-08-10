@@ -3,7 +3,6 @@ name = "editor-ffi"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-rust-version.workspace = true
 description = "UniFFI surface over the editor core, for the Swift and C# shells"
 
 [lib]

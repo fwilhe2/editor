@@ -2,12 +2,12 @@
 
 A prototype of the **Shared Core, Native Shell** architecture: one Rust library holds all the
 editing logic, and six front-ends render it — a CLI, a terminal UI, a GTK4/GNOME app, a WinUI 3 app,
-and a SwiftUI app.
+a SwiftUI app, and a browser app compiled to WebAssembly.
 
 It is a text editor only incidentally. The feature set is deliberately tiny — insert, backspace,
 cursor movement, undo/redo, save — because the point is not the editor. The point is that one core
-drives five very different UIs across three operating systems, two of them across an FFI boundary,
-without any of them owning a byte of document state.
+drives six very different UIs across three operating systems and the web, two of them across an FFI
+boundary, without any of them owning a byte of document state.
 
 **This is a work in progress.** The argument below is the reason it exists.
 
@@ -16,6 +16,7 @@ without any of them owning a byte of document state.
 [![ui_linux](https://github.com/fwilhe2/editor/actions/workflows/linux.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/linux.yml)
 [![ui_windows](https://github.com/fwilhe2/editor/actions/workflows/windows.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/windows.yml)
 [![ui_mac](https://github.com/fwilhe2/editor/actions/workflows/macos.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/macos.yml)
+[![ui_web](https://github.com/fwilhe2/editor/actions/workflows/web.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/web.yml)
 
 ## Why
 
@@ -51,24 +52,24 @@ are the deliverable.
 ## How it fits together
 
 ```
-                          ┌───────────────────────────┐
-                          │        editor-core        │
-                          │  rope · cursor · undo/redo │
-                          │  the only source of truth  │
-                          └─────────────┬─────────────┘
-                                        │
-              ┌─────────────────────────┼──────────────────────┐
-              │  Cargo dependency       │      UniFFI          │
-              │  (no FFI at all)        │      (editor-ffi)    │
-     ┌────────┴────────┬───────────┐    │    ┌─────────────────┴────────┐
-     │        │        │           │    │    │                          │
-   edit    edit-tui  edit-gtk      │    │  EditorApp (C#)      EditorApp (Swift)
-   CLI      TUI      GTK4/GNOME    │    │  WinUI 3 · Windows   SwiftUI · macOS
-                                   │    │
-                    planned: ui_qt ┘    └ planned: ui_web (wasm)
+                        ┌───────────────────────────┐
+                        │        editor-core        │
+                        │ rope · cursor · undo/redo │
+                        │ the only source of truth  │
+                        └─────────────┬─────────────┘
+                                      │
+        ┌─────────────────────────────┼───────────────────────┐
+        │                             │                       │
+Cargo dependency                wasm-bindgen               UniFFI
+ (no FFI at all)          (a Cargo dependency too)      (editor-ffi)
+        │                             │                       │
+ edit       CLI                  editor-web           EditorApp (C#)
+ edit-tui   terminal             wasm · DOM           WinUI 3 · Windows
+ edit-gtk   GTK4 / GNOME                              EditorApp (Swift)
+ ui_qt      planned                                   SwiftUI · macOS
 ```
 
-Two classes of shell, and the difference matters:
+Three classes of shell, and the difference matters:
 
 - **Rust shells** — the CLI, TUI and GTK app — depend on `editor-core` as an ordinary Cargo
   dependency and call its public API directly. No bindings, no translation layer.
@@ -76,6 +77,9 @@ Two classes of shell, and the difference matters:
   generates C# and Swift bindings. The annotations live in their own crate so the core's Rust API
   stays idiomatic (`impl AsRef<Path>`, `PathBuf`, `char`) instead of being flattened into strings
   for the benefit of foreign callers.
+- **The browser shell** — Rust again, compiled to `wasm32-unknown-unknown` and bound to the page
+  with `wasm-bindgen`. UniFFI has no JavaScript target, and would be beside the point when the shell
+  is Rust: `editor-ffi` is not involved at all.
 
 Rules the whole design leans on:
 
@@ -98,13 +102,15 @@ Rules the whole design leans on:
 | `ui_linux/` | `edit-gtk` — GTK4 + libadwaita, following the GNOME HIG |
 | `ui_windows/` | WinUI 3 app in C#, following Microsoft's Fluent guidance |
 | `ui_mac/` | SwiftUI app, following Apple's HIG, plus a Swift smoke test |
+| `ui_web/` | `editor-web` — WebAssembly app rendered into the DOM, plus a jsdom smoke test |
 
 ## Building
 
 **Cross-compilation is not supported anywhere in this project, by design.** Each app is built on the
 OS it runs on, and CI does the same on Linux, Windows and macOS runners.
 
-Everything needs a Rust toolchain. The MSRV is **1.85** and dependencies are pinned to respect it.
+Everything needs a Rust toolchain. There is no minimum version to respect: the project builds on
+current stable, which is what CI tests.
 
 ### CLI and TUI — Linux, macOS, Windows
 
@@ -162,6 +168,27 @@ It is a Swift package rather than an `.xcodeproj`, so Xcode can open `ui_mac/` d
 links the Rust **static** library, so the bundle has nothing to locate at runtime. CI wraps the
 resulting executable in an `Editor.app` using `ui_mac/Info.plist`.
 
+### Browser — WebAssembly
+
+The one shell that is not tied to an operating system, and the one that needs two build steps:
+rustc produces the `.wasm`, and the `wasm-bindgen` CLI writes the JavaScript that loads it.
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version "$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock \
+  | sed -n 's/^version = "\(.*\)"/\1/p' | head -n1)"
+
+./ui_web/build.sh release
+python3 -m http.server --directory ui_web/dist 8000
+```
+
+> The CLI's version must equal the `wasm-bindgen` crate's, or the glue will not match the module —
+> the same coupling as `uniffi` and `uniffi-bindgen-cs`, except `build.sh` reads the version out of
+> `Cargo.lock` and refuses to run on a mismatch, so there is nothing to pin by hand.
+
+Serve it; do not open `ui_web/dist/index.html` from disk, because browsers refuse to load ES modules
+and `.wasm` over `file://`. There is no server component — the output is four static files.
+
 ## Using the CLI
 
 The CLI exists so that everything the GUIs can do is also scriptable — useful for agents, shells and
@@ -173,6 +200,14 @@ edit new notes.txt
 edit insert notes.txt --text 'hello' --line 1 --col 1
 edit view notes.txt
 edit --format json info notes.txt
+```
+
+`export` and `import` are the whole document rather than a range of lines — the scriptable half of
+what the browser shell does when it opens a file and saves it back into a download:
+
+```sh
+edit export notes.txt > backup.txt        # byte for byte, unlike `view`
+edit import notes.txt --text - < backup.txt
 ```
 
 Each invocation loads the file, applies one command and writes it back. Because the process is
@@ -191,8 +226,9 @@ Without `--session`, `undo` and `redo` fail loudly rather than silently doing no
 cargo test --workspace     # needs the GTK dev packages on Linux for ui_linux
 ```
 
-The two FFI boundaries are covered by smoke tests that are deliberately UI-free, so they run on any
-OS — including the one that cannot build the shell they belong to:
+The boundaries to other languages and to the browser are covered by smoke tests that are
+deliberately UI-free, so they run on any OS — including the one that cannot build the shell they
+belong to:
 
 ```sh
 # C#
@@ -202,30 +238,37 @@ LD_LIBRARY_PATH=target/release dotnet run --project ffi/csharp-smoke
 swift build --package-path ui_mac --product FfiSmoke \
   -Xlinker "$PWD/target/release/libeditor_ffi.a"
 ./ui_mac/.build/debug/FfiSmoke
+
+# Browser: the real wasm module driven against the real page in jsdom, no browser
+./ui_web/smoke.sh release
 ```
 
-Both run before the app build in CI, so a failure tells you immediately whether the bug is in the
-bindings or in the UI code.
+All three run before their app build in CI, so a failure tells you immediately whether the bug is in
+the bindings or in the UI code.
 
 ## Status and limits
 
 This is a prototype, and it is honest about being one. Known gaps:
 
-- No horizontal scrolling in the TUI; no mouse-wheel scrolling in the GUI shells.
+- No horizontal scrolling in the TUI; no mouse-wheel scrolling in the desktop GUI shells (the
+  browser shell does have it).
+- The browser shell has no IME composition, no touch keyboard on mobile, and no scrollbar. A page
+  also cannot write back to the file it opened — saving is a download, which is the platform's rule.
 - Line endings are assumed to be LF.
 - No search, selection, clipboard, multiple documents or syntax highlighting.
 
-Two more shells are planned, both of which stretch the architecture in a useful direction:
+One more shell is planned, and it stretches the architecture in a useful direction:
 
 - **Qt** (`ui_qt/`) — a second desktop toolkit, and the KDE/Plasma conventions that come with it.
   Likely via [`cxx-qt`](https://github.com/KDAB/cxx-qt), which would keep it a plain Rust crate
   depending on the core directly, like the GTK and terminal shells. See `CLAUDE.md` for the
-  trade-off against a C++ Qt app, which would need a third binding mechanism.
-- **Browser / WebAssembly** (`ui_web/`) — the core is pure Rust with no platform assumptions, so it
-  compiles to `wasm32-unknown-unknown` as-is. A web shell would reach it through `wasm-bindgen`
-  rather than UniFFI, adding a third class of shell and proving the same viewport API works when the
-  UI is a DOM. It is also the honest test of the argument above: the web is one more platform with
-  conventions of its own, not an excuse to stop having any.
+  trade-off against a C++ Qt app, which would need a fourth binding mechanism.
+
+The browser shell (`ui_web/`) was the previous entry on that list. It is the honest test of the
+argument above — the web is one more platform with conventions of its own, not an excuse to stop
+having any — and it proved the two boundaries that mattered: `get_viewport` survives a DOM renderer
+unchanged, and the core's file API grew a filesystem-free half (`load_text` / `save_to_string`) that
+the CLI exposes as `import` / `export`, because a capability in one shell alone is a bug.
 
 `CLAUDE.md` documents the architecture in more depth, including the invariants worth preserving and
 the traps each shell hides.

@@ -5,13 +5,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Status
 
 Every shell in the original plan exists: `core/`, `cli/`, `ffi/`, `ui_tui/`, `ui_linux/`,
-`ui_windows/` and `ui_mac/`. Only the planned `ui_qt/` (see below) is outstanding.
+`ui_windows/` and `ui_mac/`, plus `ui_web/`, which was planned later. Only the planned `ui_qt/`
+(see below) is outstanding.
 
-**MSRV is 1.85** (`rust-version` in the workspace manifest), matching the toolchain on the dev
-machine. This actively constrains dependency choices: `ratatui` is pinned to 0.29 because 0.30 needs
-1.88, and `Cargo.lock` holds `instability` and `darling` back for the same reason. If a build fails
-with "rustc 1.85.0 is not supported by the following packages", pin the offending crate with
-`cargo update -p <crate> --precise <older>` rather than raising the MSRV by accident.
+**There is no MSRV.** `rust-version` was removed from the workspace manifest, and the pins that
+served it are gone with it: `ratatui` is on 0.30, `instability` and `darling` are unpinned. The
+policy is "builds on current stable", which is what CI actually tests — the old 1.85 floor was
+enforced by accident, because the dev machine had nothing newer, and once rustup arrived nothing
+checked it at all. A stated-but-unchecked minimum is worse than none.
+
+So: take dependency updates freely. If one ever needs to be held back it should be for a reason that
+is written down at the pin, not for a compiler version nobody verifies.
 
 The core still has **no tokio runtime**, because nothing needs one — every operation is synchronous
 and fast. Add it when the core gains work that must not block a UI thread.
@@ -19,7 +23,7 @@ and fast. Add it when the core gains work that must not block a UI thread.
 ## Commands
 
 ```sh
-cargo test --workspace          # 58 tests; needs libgtk-4-dev + libadwaita-1-dev for ui_linux
+cargo test --workspace          # 84 tests; needs libgtk-4-dev + libadwaita-1-dev for ui_linux
 cargo test -p editor-core       # one crate
 cargo test undo                 # single test by name substring
 cargo run -p editor-cli -- --help
@@ -27,24 +31,42 @@ cargo run -p editor-tui -- FILE
 cargo run -p editor-gtk -- FILE
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+
+./ui_web/build.sh release     # wasm module + JS glue + static files -> ui_web/dist
+./ui_web/smoke.sh release     # drive the built module in jsdom, no browser needed
+python3 -m http.server --directory ui_web/dist 8000
 ```
 
 `--workspace` only works on Linux with the GTK development packages installed; CI builds `ui_linux`
-in its own Linux-only job and tests the other crates by name. `rustfmt` and `clippy` may not be
-installed locally (this machine has no `rustup`); CI is the enforcement point.
+in its own Linux-only job and tests the other crates by name.
 
-Driving the TUI non-interactively, for when a change needs checking in a real terminal — always
-under `timeout`, since `event::read()` blocks forever if the keys arrive before raw mode engages:
+Every command above runs on this machine as written: rustup is installed, with `rustfmt`, `clippy`,
+the `wasm32-unknown-unknown` target and a matching `wasm-bindgen` CLI. Run fmt and clippy before
+pushing rather than discovering them in CI — noting that the default toolchain here is *nightly*, so
+a lint that fires locally may not exist on the stable CI uses, and vice versa.
+
+`editor-web` is in the workspace and builds and tests on the host like any other crate — `web-sys`
+compiles anywhere, it just cannot run. Only `ui_web/build.sh` needs the wasm target and the
+`wasm-bindgen` CLI, and on a machine without them it says so and stops.
+
+Driving the TUI non-interactively, for when a change needs checking in a real terminal:
 
 ```sh
-( sleep 2; printf 'text\r'; sleep 1; printf '\x13\x11' ) \
-  | timeout 20 script -qec "target/debug/edit-tui FILE" /dev/null
+cargo build -p editor-tui
+./ui_tui/drive.py FILE 'hi\r' '\x13' '\x11'    # type "hi" + Enter, Ctrl+S, Ctrl+Q
 ```
+
+Each argument is one burst of input, sent a beat apart so raw mode is in place first. **Piping into
+`script` no longer works**: since ratatui 0.30 the terminal is asked where the cursor is (`ESC[6n`)
+during startup and start-up blocks until something answers, which a pipe never does — the binary
+gives up with "The cursor position could not be read within a normal duration". `drive.py` opens a
+real pty and plays terminal, reply included. It strips escape sequences from what it prints, so the
+text is readable but the layout is not; for layout, look at it yourself.
 
 ## Scope
 
 This is a **prototype of the architecture concept, not a competitive editor**. The feature set is
-deliberately minimal — it exists to prove that one Rust core can drive five very different
+deliberately minimal — it exists to prove that one Rust core can drive six very different
 front-ends. When in doubt, do not add features; add them to the core only if every shell (including
 the CLI) can expose them. Breadth across platforms is the deliverable; depth of editing features is
 explicitly not.
@@ -52,16 +74,19 @@ explicitly not.
 ## Target architecture: Shared Core, Native Shell
 
 All editor logic, state, and I/O live in one pure-Rust crate (`core/`). Every UI is a "dumb"
-renderer and event forwarder — it holds no editor state of its own. Two classes of shell consume
+renderer and event forwarder — it holds no editor state of its own. Three classes of shell consume
 the core differently, and this split is the main thing to keep straight:
 
 - **Rust shells** (`cli/`, `ui_tui/`, `ui_linux/`, and `ui_qt/` if it uses `cxx-qt`) depend on
   `core` as an ordinary Cargo dependency and call its public API directly. No FFI, no bindings, no
   translation layer.
-- **Foreign shells** (`ui_windows/`, and `ui_mac/` when it exists) reach the core through
-  UniFFI-generated bindings produced from the **`ffi/` crate**, not from `core` directly. Windows
-  builds `editor_ffi.dll` and consumes generated C#; macOS will build an `.xcframework` and consume
-  generated Swift.
+- **Foreign shells** (`ui_windows/` and `ui_mac/`) reach the core through UniFFI-generated bindings
+  produced from the **`ffi/` crate**, not from `core` directly. Windows builds `editor_ffi.dll` and
+  consumes generated C#; macOS builds a static library and consumes generated Swift.
+- **The browser shell** (`ui_web/`) is both at once: Rust depending on `core` directly, compiled to
+  `wasm32-unknown-unknown`, reaching its platform through **`wasm-bindgen`**. UniFFI has no
+  JavaScript target, and would be pointless when the shell is Rust anyway — so `ffi/` is not
+  involved at all.
 
 Layout (Cargo workspace at the root; ✅ exists, ⬜ planned):
 
@@ -73,6 +98,7 @@ ui_tui/       ✅ editor-tui   — the `edit-tui` binary (ratatui)
 ui_linux/     ✅ editor-gtk   — the `edit-gtk` binary (GTK4 + libadwaita)
 ui_windows/   ✅ EditorApp    — C# / WinUI 3, consuming generated bindings
 ui_mac/       ✅ EditorApp    — SwiftUI (SwiftPM package), generated Swift bindings
+ui_web/       ✅ editor-web   — wasm32 + wasm-bindgen, rendered into the DOM
 ui_qt/        ⬜ Qt shell (see "Planned: the Qt shell")
 ```
 
@@ -100,7 +126,8 @@ These are decisions from the spec that are expensive to reverse later:
 
 Shells hold an `Arc<Editor>` (`core/src/lib.rs`) and call:
 
-- documents — `open`, `load_file`, `save_file`, `save_file_as`
+- documents — `open`, `load_file`, `save_file`, `save_file_as`, and for shells with no filesystem,
+  `load_text(name, text)` / `save_to_string(name)`
 - editing — `handle_input(char)`, `insert_text(&str)`, `handle_backspace()`, `undo()`, `redo()`
 - cursor/view — `move_cursor(Direction)`, `set_cursor(Position)`, `cursor()`,
   `get_viewport(start, end)`, `scroll_offset()` / `set_scroll_offset()`, `follow_cursor(height)`
@@ -128,6 +155,11 @@ Non-obvious invariants in the implementation:
 - **`follow_cursor` deliberately does not notify when the offset does not move.** Shells call it
   while laying out a frame; an unconditional notification would have every repaint request the next
   one, forever. There is a test pinning this.
+- **`load_text` / `save_to_string` are the file API for platforms the core cannot read or write on
+  its own** — the browser, where a file arrives as a string from the File API and leaves as a
+  download. `load_text` is a *load*, not a large insert: it clears the history, because undoing into
+  a document that was replaced would resurrect text the file never had. `save_to_string` is the one
+  place a shell legitimately receives the whole buffer; rendering still goes through `get_viewport`.
 - Line terminators are assumed to be LF. Backspace removes a single `char`, so a CRLF file loses the
   `\n` and keeps a stray `\r`. Acceptable for the prototype; fix in `EditorState::backspace` if it
   ever matters.
@@ -143,10 +175,10 @@ A non-interactive, scriptable front-end over the same core API — and the thing
 rule honest. Three audiences at once: agents, humans in a shell, and scripts/CI. No prompts, no TTY
 assumptions; stdout is parseable, diagnostics go to stderr, failures exit non-zero.
 
-Subcommands: `new`, `view`, `insert`, `backspace`, `move`, `undo`, `redo`, `info`. Global flags:
-`--session`, `--format text|json`, `--dry-run`.
+Subcommands: `new`, `view`, `export`, `import`, `insert`, `backspace`, `move`, `undo`, `redo`,
+`info`. Global flags: `--session`, `--format text|json`, `--dry-run`.
 
-Three decisions to keep in mind before changing it:
+Four decisions to keep in mind before changing it:
 
 - **The CLI is 1-based, the core is 0-based.** Column 1 is before the first character. `report::Cursor`
   (`to_core` / `from_core`) is the *only* place the two meet — never convert anywhere else.
@@ -156,6 +188,11 @@ Three decisions to keep in mind before changing it:
   silent no-op — the stacks would always be empty.
 - **`--text` accepts hyphen-leading values** (`allow_hyphen_values`), because inserting arbitrary
   text is the point; a bare `-` reads stdin instead.
+- **`export`/`import` exist because the browser shell does.** They are the CLI's half of
+  `save_to_string`/`load_text`: `export` writes the document to stdout byte for byte (unlike `view`,
+  which prints a range of lines and normalises the ends), `import` replaces it wholesale and drops
+  the undo history with it. Added in the same change as `ui_web/`, which is what the parity rule
+  demands.
 
 `text` output is deliberately bare — `view` prints just the lines, so it pipes into `grep`/`wc`.
 `json` emits a single object; `changed` distinguishes a real edit from a no-op, `written` says
@@ -172,6 +209,10 @@ that looks the same on all three is the wrong outcome.
   shortcuts (⌘S, ⌘Q), native window/toolbar behavior.
 - **Windows (`ui_windows/`)** — Microsoft's WinUI 3 / Fluent design docs: Fluent controls, Mica
   backdrop, Windows keyboard conventions.
+- **The browser (`ui_web/`)** — the web's own conventions, which are as real as any desktop's:
+  system font stack, `prefers-color-scheme` rather than a chosen theme, visible focus rings,
+  Ctrl-*and*-⌘ shortcuts, files through the File API and a download, `beforeunload` in place of a
+  close dialog. It is a platform to respect, not the place where respecting platforms stops.
 
 Consult the current published guidelines when building UI; do not copy conventions from one shell to
 another.
@@ -182,7 +223,8 @@ Every shell gets its own GitHub Actions workflow that builds it: `core-cli.yml` 
 plus one workspace-wide fmt/clippy job), `tui.yml` (three OS runners), `linux.yml` (Ubuntu only),
 `windows.yml` and `macos.yml` (Windows/macOS only — Rust library, then bindings, then the FFI smoke
 test, then the app; the smoke test running before the UI build is what separates a binding failure
-from a XAML/SwiftUI one).
+from a XAML/SwiftUI one), and `web.yml` (Ubuntu only, because the browser is not an operating
+system: wasm is the same artifact everywhere).
 
 Two traps when adding a shell with system dependencies: the shared jobs must stop using
 `--workspace` where the new crate cannot build (the core/CLI test job names its crates for exactly
@@ -320,14 +362,56 @@ swift build --package-path ui_mac --product FfiSmoke -Xlinker "$PWD/target/relea
   knows nothing about the document — from taking ⌘Z.
 - Known gap: no scrolling by mouse or trackpad; the viewport follows the caret only.
 
-## Planned: the browser shell (`ui_web/`)
+## The browser shell (`ui_web/`, crate `editor-web`)
 
-Not written. The core is pure Rust with no platform assumptions, so it already compiles to
-`wasm32-unknown-unknown`; a web shell would reach it through **`wasm-bindgen`, not UniFFI**, making a
-third class of shell alongside "Rust direct" and "UniFFI foreign". `get_viewport` is the part worth
-proving there — a DOM renderer is the furthest thing from the rope, and if the viewport API survives
-it, the boundary is right. The web has its own conventions; treat it as a platform to respect, not
-as the excuse to stop respecting any.
+Rust compiled to `wasm32-unknown-unknown`, depending on `core` directly and reaching the page
+through **`wasm-bindgen`, not UniFFI** — which has no JavaScript target and would be the wrong tool
+regardless, since the shell is Rust. That makes it a third class of shell: Rust-direct like the TUI,
+foreign-bound like WinUI, both at once.
+
+Building is two steps, because rustc only produces half of what a page needs. `ui_web/build.sh`
+compiles the `.wasm`, runs the `wasm-bindgen` CLI over it to write the JS glue, and copies
+`index.html` and `style.css` into `ui_web/dist/` (gitignored). **The CLI's version and the
+`wasm-bindgen` crate version must match exactly** — the build script reads the version out of
+`Cargo.lock` and refuses to run otherwise, and `web.yml` installs the CLI the same way. This is the
+same coupling as `uniffi` / `uniffi-bindgen-cs`, with the advantage that neither side has to be
+pinned by hand.
+
+- **The DOM is a renderer, not the document.** There is no `contenteditable` anywhere; `#text` is
+  rebuilt from `get_viewport` every repaint and the caret is a positioned `<div>`. Exactly the GTK
+  `TextView` and WinUI `TextBox` rule — if the browser is allowed to edit the text, it wins, and the
+  core is no longer the source of truth.
+- **The browser is the first platform here with no filesystem**, which is why `Editor::load_text`
+  and `Editor::save_to_string` exist. A file arrives from the File API as a string and leaves as a
+  download; the shell never sees a path, and the name it carries is only what the download is
+  called. The page cannot write back to the file it opened, and that is the platform's rule, not a
+  gap in the shell.
+- **The observer holds a flag, not the page.** `EditorObserver` is `Send + Sync` and a wasm module is
+  single-threaded, so `Notifier` owns an `AtomicBool` and schedules a `requestAnimationFrame`. The
+  flag doubles as "a frame is already scheduled", which is what coalesces a burst into one repaint —
+  the same job the GTK shell's channel drain does.
+- **`render` draws from `scroll_offset` and never calls `follow_cursor`;** key handling calls it
+  explicitly. Same reason as GTK: otherwise a wheel scroll away from the caret snaps straight back.
+- **`keymap.rs` and `layout.rs` are DOM-free and unit-tested on the host.** `web-sys` compiles for
+  any target, so `cargo test -p editor-web` needs no browser and no wasm toolchain. `layout.rs` is
+  where the pixel arithmetic lives — caret placement, hit testing, wheel deltas — precisely so it can
+  be tested at all.
+- **Metrics come from `#probe`**, a hidden element carrying the same CSS as a line; its width is ten
+  characters and its height one line. Re-measured every frame, because page zoom and a late font
+  change both and neither fires an event. `Metrics::new` floors both at a non-zero value, or the
+  first paint (before layout, when every rectangle is 0) would divide by zero.
+- **`ui_web/smoke.js` is where the boundary is actually tested**, the sibling of `ffi/csharp-smoke`
+  and `FfiSmoke`. `smoke.sh` regenerates the glue for the *node* target and drives the real module
+  against the real `index.html` in jsdom: typing, arrows, undo/redo, Enter, the wheel, the status
+  bar, a resize. jsdom has no layout engine, so every rectangle is zero and the viewport is one line
+  tall — which is enough to prove the wiring, and means a failure after it passes is CSS.
+  What it cannot see is how any of it looks: the layout was checked by hand in Firefox, and a real
+  browser stays the only way to check it after a change to `style.css` or the caret arithmetic.
+- Mouse-wheel scrolling exists here and not in the other GUI shells; it goes straight into
+  `set_scroll_offset`, so the scroll rule is still the core's.
+- Known gaps: no IME composition (a key that produces one non-control character is text, everything
+  else is a named key), no touch keyboard on mobile (there is no input element to focus), and no
+  scrollbar — the wheel and the caret are the only ways to move the view.
 
 ## Planned: the Qt shell (`ui_qt/`)
 

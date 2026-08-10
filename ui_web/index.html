@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Editor</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+
+  <body>
+    <!--
+      The shell is Rust; this file only declares the elements it writes to. Nothing
+      here is editable: #text is rebuilt from the core's viewport on every repaint,
+      which is what keeps the browser from becoming a second source of truth.
+    -->
+    <header class="toolbar">
+      <button id="open" type="button" title="Open a file (Ctrl/⌘ O)">Open</button>
+      <button id="save" type="button" title="Download the document (Ctrl/⌘ S)">Save</button>
+      <span class="toolbar-gap"></span>
+      <button id="undo" type="button" title="Undo (Ctrl/⌘ Z)" disabled>Undo</button>
+      <button id="redo" type="button" title="Redo (Ctrl/⌘ ⇧ Z)" disabled>Redo</button>
+    </header>
+
+    <main
+      id="surface"
+      class="surface"
+      tabindex="0"
+      role="textbox"
+      aria-multiline="true"
+      aria-label="Document"
+    >
+      <div id="lines" class="lines">
+        <div id="text"></div>
+        <div id="caret" class="caret"></div>
+        <!-- Measured, never read: its width is ten characters and its height one
+             line, which is everything the shell needs to place the caret. -->
+        <div id="probe" class="line probe" aria-hidden="true">0000000000</div>
+      </div>
+    </main>
+
+    <footer class="status">
+      <span id="name" class="name">untitled.txt</span>
+      <span id="message" class="message"></span>
+      <span id="position" class="position"></span>
+    </footer>
+
+    <input id="file-input" type="file" accept="text/*,.txt,.md" hidden />
+
+    <script type="module">
+      import init from "./editor_web.js";
+      init().catch((error) => {
+        document.getElementById("message").textContent =
+          "Could not start the editor: " + error;
+      });
+    </script>
+  </body>
+</html>

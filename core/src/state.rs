@@ -73,14 +73,20 @@ impl EditorState {
             path: path.to_path_buf(),
             source,
         })?;
-        self.text = Rope::from_str(&text);
+        self.load_text(Some(path.to_path_buf()), &text);
+        Ok(())
+    }
+
+    /// Become a freshly opened document holding `text`. The read half of the file
+    /// API for shells whose platform, not the core, does the reading.
+    pub(crate) fn load_text(&mut self, path: Option<PathBuf>, text: &str) {
+        self.text = Rope::from_str(text);
         self.cursor = Position::default();
         self.scroll_offset = 0;
-        self.path = Some(path.to_path_buf());
+        self.path = path;
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.dirty = false;
-        Ok(())
     }
 
     pub(crate) fn save_to(&mut self, path: &Path) -> Result<()> {
@@ -96,6 +102,17 @@ impl EditorState {
     pub(crate) fn save(&mut self) -> Result<()> {
         let path = self.path.clone().ok_or(EditorError::NoPath)?;
         self.save_to(&path)
+    }
+
+    /// Hand the whole document to a caller that will write it somewhere the core
+    /// cannot reach, and count that as saved. The write half of the file API for
+    /// shells whose platform does the writing.
+    pub(crate) fn save_to_string(&mut self, path: Option<PathBuf>) -> String {
+        if let Some(path) = path {
+            self.path = Some(path);
+        }
+        self.dirty = false;
+        self.text.to_string()
     }
 
     /// Apply an edit without touching the undo/redo stacks.

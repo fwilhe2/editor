@@ -17,7 +17,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use editor_core::{Direction, Editor, Session};
 
-use report::{Cursor, DocumentReport, Format, Report, ViewReport};
+use report::{Cursor, DocumentReport, ExportReport, Format, Report, ViewReport};
 
 #[derive(Parser)]
 #[command(
@@ -67,6 +67,19 @@ enum Command {
         /// How many lines to print
         #[arg(long, default_value_t = 40)]
         lines: u64,
+    },
+
+    /// Print the whole document exactly as a save would write it
+    Export { file: PathBuf },
+
+    /// Replace the whole document, discarding its undo history
+    Import {
+        file: PathBuf,
+        /// Replacement contents; "-" reads them from stdin
+        ///
+        /// Hyphen-leading values are taken literally, as with `insert --text`.
+        #[arg(long, allow_hyphen_values = true)]
+        text: String,
     },
 
     /// Insert text at the cursor
@@ -181,6 +194,32 @@ fn run(cli: &Cli) -> Result<Report, String> {
                 total_lines: viewport.total_lines,
                 cursor: Cursor::from_core(viewport.cursor),
             }))
+        }
+
+        // `export` and `import` are the CLI's half of what a shell without a
+        // filesystem has to do: the browser reads a file through the File API and
+        // saves it into a download, so the core grew `save_to_string`/`load_text`
+        // and the parity rule says they have to be reachable from here too.
+        Command::Export { file } => {
+            let editor = load(file, cli)?;
+            Ok(Report::Export(ExportReport {
+                path: file.display().to_string(),
+                text: editor.save_to_string(None),
+            }))
+        }
+
+        Command::Import { file, text } => {
+            let editor = load(file, cli)?;
+            let text = if text == "-" {
+                read_stdin()?
+            } else {
+                text.clone()
+            };
+            let changed = editor.text() != text;
+            // Replacing the document invalidates the history recorded against the
+            // old one, which is why this is a load rather than a large edit.
+            editor.load_text(Some(&file.display().to_string()), &text);
+            finish(&editor, cli, changed)
         }
 
         Command::Insert {
