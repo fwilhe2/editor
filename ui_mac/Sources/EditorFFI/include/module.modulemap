@@ -1,0 +1,7 @@
+// Hand-written rather than the one uniffi emits, which declares `use "Darwin"`
+// and therefore only works on Apple platforms. This one also builds on Linux,
+// which is what lets FfiSmoke run without a Mac.
+module editor_ffiFFI {
+    header "editor_ffiFFI.h"
+    export *
+}

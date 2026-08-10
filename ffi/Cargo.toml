@@ -8,10 +8,18 @@ description = "UniFFI surface over the editor core, for the Swift and C# shells"
 
 [lib]
 name = "editor_ffi"
-# cdylib is what the foreign shells load; lib keeps the crate testable from Rust.
-crate-type = ["cdylib", "lib"]
+# cdylib is what C# loads at runtime; staticlib is what the Swift app links so the
+# .app has no dylib to find; lib keeps the crate testable from Rust.
+crate-type = ["cdylib", "staticlib", "lib"]
+
+# Swift bindings come from uniffi itself, unlike C# which needs an external
+# generator. Shipping the generator as a binary here keeps it on the same version
+# as the runtime automatically.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
 
 [dependencies]
 editor-core.workspace = true
-uniffi.workspace = true
+uniffi = { workspace = true, features = ["cli"] }
 thiserror.workspace = true

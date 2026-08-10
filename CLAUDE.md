@@ -4,8 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-`core/`, `cli/`, `ffi/`, `ui_tui/`, `ui_linux/` and `ui_windows/` are implemented. `ui_mac/` does not
-exist yet, and neither does the planned `ui_qt/` (see below).
+Every shell in the original plan exists: `core/`, `cli/`, `ffi/`, `ui_tui/`, `ui_linux/`,
+`ui_windows/` and `ui_mac/`. Only the planned `ui_qt/` (see below) is outstanding.
 
 **MSRV is 1.85** (`rust-version` in the workspace manifest), matching the toolchain on the dev
 machine. This actively constrains dependency choices: `ratatui` is pinned to 0.29 because 0.30 needs
@@ -72,8 +72,8 @@ ffi/          ✅ editor-ffi   — UniFFI facade + a C# smoke test of the bounda
 ui_tui/       ✅ editor-tui   — the `edit-tui` binary (ratatui)
 ui_linux/     ✅ editor-gtk   — the `edit-gtk` binary (GTK4 + libadwaita)
 ui_windows/   ✅ EditorApp    — C# / WinUI 3, consuming generated bindings
+ui_mac/       ✅ EditorApp    — SwiftUI (SwiftPM package), generated Swift bindings
 ui_qt/        ⬜ Qt shell (see "Planned: the Qt shell")
-ui_mac/       ⬜ Xcode project, SwiftUI/AppKit + generated Swift bindings
 ```
 
 `ui_linux/` is GTK/GNOME-specific despite the name. Once `ui_qt/` exists — Qt runs on all three
@@ -180,7 +180,9 @@ another.
 
 Every shell gets its own GitHub Actions workflow that builds it: `core-cli.yml` (three OS runners
 plus one workspace-wide fmt/clippy job), `tui.yml` (three OS runners), `linux.yml` (Ubuntu only),
-`windows.yml` (Windows only — Rust cdylib, then bindings, then the FFI smoke test, then the app).
+`windows.yml` and `macos.yml` (Windows/macOS only — Rust library, then bindings, then the FFI smoke
+test, then the app; the smoke test running before the UI build is what separates a binding failure
+from a XAML/SwiftUI one).
 
 Two traps when adding a shell with system dependencies: the shared jobs must stop using
 `--workspace` where the new crate cannot build (the core/CLI test job names its crates for exactly
@@ -258,6 +260,7 @@ the Rust shells never compile UniFFI at all.
 Versions are coupled and must be bumped together: **`uniffi` in `Cargo.toml` and the
 `uniffi-bindgen-cs` tag in `.github/workflows/windows.yml`** (currently 0.31 / `v0.11.0+v0.31.0`).
 The generator lags upstream uniffi, so uniffi's latest release is usually *not* the one to use.
+Swift has no such problem — its generator is built from `ffi/` itself.
 
 Regenerating bindings by hand:
 
@@ -284,6 +287,38 @@ uniffi-bindgen-cs --library target/release/libeditor_ffi.so --out-dir ui_windows
 - The app is **unpackaged** (`WindowsPackageType=None`) so CI can build it without signing
   certificates. `editor_ffi.dll` is copied next to the executable by the csproj.
 - Known gap: no mouse-wheel scrolling — the viewport moves only via `follow_cursor`.
+
+## The macOS shell (`ui_mac/`)
+
+SwiftUI over the same `ffi/` crate. **Swift bindings come from uniffi itself**, via a
+`uniffi-bindgen` binary inside `ffi/`, so the generator is always on the same uniffi version as the
+runtime — unlike C#, whose external generator must be matched by hand.
+
+```sh
+cargo build --release -p editor-ffi
+./ui_mac/generate-bindings.sh release
+swift build --package-path ui_mac --product FfiSmoke -Xlinker "$PWD/target/release/libeditor_ffi.a"
+./ui_mac/.build/debug/FfiSmoke
+```
+
+- **SwiftPM, not a `.xcodeproj`.** A hand-written `.pbxproj` is unreviewable and easy to corrupt;
+  Xcode opens the package directly and `xcodebuild` builds it. CI assembles `Editor.app` around the
+  SwiftPM executable with `ui_mac/Info.plist` — without that plist the process gets no menu bar.
+- **`swift-tools-version: 5.9` on purpose.** Swift 6's strict concurrency rejects the generated
+  bindings' `@unchecked Sendable`.
+- **The module map in `Sources/EditorFFI/include/` is hand-written and committed.** The one uniffi
+  emits declares `use "Darwin"` and only works on Apple platforms; ours also builds on Linux, which
+  is what lets `FfiSmoke` run without a Mac. `generate-bindings.sh` deliberately does not copy it.
+- **The app links `libeditor_ffi.a`, not the dylib**, so the bundle has no library to find at
+  runtime. That is why `ffi/` builds `staticlib` as well as `cdylib`.
+- **`FfiSmoke` mirrors `ffi/csharp-smoke`** and is the same 13 checks. Both run on Linux, so both
+  FFI boundaries are verifiable here; what is *not* verifiable locally is SwiftUI and XAML.
+- Named constructors become static methods, not initialisers: `EditorHandle.open(path:)`, not
+  `EditorHandle(path:)`. Only a constructor called `new` maps to `init`.
+- Keys go through `.onKeyPress` (macOS 14+); ⌘-shortcuts are returned as `.ignored` so the menu bar
+  handles them. `CommandGroup(replacing: .undoRedo)` is what stops AppKit's own undo stack — which
+  knows nothing about the document — from taking ⌘Z.
+- Known gap: no scrolling by mouse or trackpad; the viewport follows the caret only.
 
 ## Planned: the Qt shell (`ui_qt/`)
 

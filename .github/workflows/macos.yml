@@ -1,0 +1,59 @@
+name: ui_mac
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # SwiftUI needs macOS, and the static library the app links must be built for
+  # macOS too. Nothing here is cross-compiled.
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Build the core as a static library
+        run: cargo build --release -p editor-ffi
+
+      # The Swift generator ships inside the ffi crate, so it is always on the
+      # same uniffi version as the library — unlike the C# one.
+      - name: Generate the Swift bindings
+        run: ./ui_mac/generate-bindings.sh release
+
+      # Proves the boundary works before any SwiftUI is involved. This same
+      # executable runs on Linux, which is where it is checked during development.
+      - name: FFI smoke test
+        run: |
+          swift build --package-path ui_mac --product FfiSmoke \
+            -Xlinker "$PWD/target/release/libeditor_ffi.a"
+          ./ui_mac/.build/debug/FfiSmoke
+
+      - name: Build the app
+        run: |
+          swift build --package-path ui_mac --product EditorApp -c release \
+            -Xlinker "$PWD/target/release/libeditor_ffi.a"
+
+      # SwiftPM emits a bare executable; macOS wants a bundle to launch from
+      # Finder and to get a menu bar.
+      - name: Assemble Editor.app
+        run: |
+          app="$RUNNER_TEMP/Editor.app"
+          mkdir -p "$app/Contents/MacOS"
+          cp ui_mac/.build/release/EditorApp "$app/Contents/MacOS/Editor"
+          cp ui_mac/Info.plist "$app/Contents/Info.plist"
+          echo "APPL????" > "$app/Contents/PkgInfo"
+
+      - name: Upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Editor-app-macos
+          path: ${{ runner.temp }}/Editor.app
+          if-no-files-found: error
