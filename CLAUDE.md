@@ -13,11 +13,22 @@ outstanding.
 
 `ui_egui/` is **under construction** — a deliberately non-native, portable GUI, decided on in
 [`doc/decision-egui-shell.md`](doc/decision-egui-shell.md) and being built in the stages of
-[`doc/plan-egui-shell.md`](doc/plan-egui-shell.md). Stage 1 has landed: the crate is a workspace
-member, `eframe`/`egui_kittest` are pinned in `[workspace.dependencies]`, and `edit-egui` handles its
-arguments and opens the document. It has **no window, no renderer and no key map yet** — those are
-stages 2 to 4, and the headless `egui_kittest` tests that justify the whole shell are stage 5. Do not
-document it as working until they exist.
+[`doc/plan-egui-shell.md`](doc/plan-egui-shell.md). Stages 1 and 2 have landed: the crate is a
+workspace member, `eframe`/`egui_kittest` are pinned in `[workspace.dependencies]`, and `edit-egui`
+opens a window whose title tracks the document, with the observer wired to `request_repaint`. It has
+**no renderer and no key map yet** — stages 3 and 4 — and the headless `egui_kittest` tests that
+justify the whole shell are stage 5. Do not document it as working until they exist.
+
+Three things about this shell are already load-bearing and easy to undo by accident:
+
+- **`egui::Context` is the whole observer bridge.** It is `Clone + Send + Sync`, so `Notifier` holds
+  one directly — no channel as in GTK, no `AtomicBool` as in the TUI and browser shells — and
+  `request_repaint` coalesces by itself.
+- **Nothing may ask for a repaint on a timer.** The core pushes; a continuous-repaint mode would make
+  this the one shell that polls. `an_idle_shell_stops_asking_to_be_repainted` pins it.
+- **Driving a bare `egui::Context` in a test panics on drop** unless `output.textures_delta` is
+  cleared: a pass hands back textures the caller is supposed to upload. `egui_kittest` handles this,
+  which is one more reason stage 5's tests go through the harness.
 
 **There is no MSRV.** `rust-version` was removed from the workspace manifest, and the pins that
 served it are gone with it: `ratatui` is on 0.30, `instability` and `darling` are unpinned. The
@@ -34,12 +45,13 @@ and fast. Add it when the core gains work that must not block a UI thread.
 ## Commands
 
 ```sh
-cargo test --workspace          # 84 tests; needs libgtk-4-dev + libadwaita-1-dev for ui_linux
+cargo test --workspace          # 88 tests; needs libgtk-4-dev + libadwaita-1-dev for ui_linux
 cargo test -p editor-core       # one crate
 cargo test undo                 # single test by name substring
 cargo run -p editor-cli -- --help
 cargo run -p editor-tui -- FILE
 cargo run -p editor-gtk -- FILE
+cargo run -p editor-egui -- FILE    # no system dependencies, any platform
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 
