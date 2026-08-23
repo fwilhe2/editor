@@ -137,6 +137,18 @@ cargo run --release -p editor-gtk -- somefile.txt
 Needs the .NET 8 SDK and the Windows App SDK (the "Windows application development" workload in
 Visual Studio installs both). The C# bindings are generated, not committed, so generate them first:
 
+On a fresh Windows installation, run PowerShell as Administrator and use the unattended,
+idempotent bootstrapper. Add `-Build` to perform the complete build after installation:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\install-windows-dependencies.ps1 -Build
+```
+
+The script installs Visual Studio Build Tools with the MSVC compiler and Windows 11 SDK, the .NET
+8 SDK, Rust's stable MSVC toolchain, and the pinned UniFFI C# generator. It downloads installers
+directly from their upstream vendors and skips components that are already present.
+
 ```powershell
 cargo build --release -p editor-ffi
 
