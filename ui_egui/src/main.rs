@@ -14,14 +14,14 @@
 //! runs. See `doc/decision-egui-shell.md` for why that trade is worth making, and
 //! `doc/plan-egui-shell.md` for the stages this shell is being built in.
 //!
-//! **Stages 1 and 2 of that plan**: the crate, the window, and the observer. The text
-//! is not rendered yet and no key does anything — the renderer is stage 3 and the key
-//! map is stage 4.
+//! **Stages 1 to 3 of that plan**: the crate, the window, the observer and the
+//! renderer. No key does anything yet — the key map is stage 4.
 //!
 //! This file owns the process: arguments, the editor, the window, and the bridge that
 //! turns a core notification into a repaint.
 
 mod app;
+mod layout;
 
 use std::process::ExitCode;
 use std::sync::Arc;

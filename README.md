@@ -104,7 +104,7 @@ Rules the whole design leans on:
 | `ui_windows/` | WinUI 3 app in C#, following Microsoft's Fluent guidance |
 | `ui_mac/` | SwiftUI app, following Apple's HIG, plus a Swift smoke test |
 | `ui_web/` | `editor-web` — WebAssembly app rendered into the DOM, plus a jsdom smoke test |
-| `ui_egui/` | `edit-egui` — portable GUI on egui/eframe, native to nothing. **Work in progress**: the window opens, the document is not drawn yet |
+| `ui_egui/` | `edit-egui` — portable GUI on egui/eframe, native to nothing. **Work in progress**: renders the document, cannot edit it yet |
 
 ## Building
 
@@ -134,9 +134,9 @@ Windows all build it with nothing but a Rust toolchain.
 cargo run --release -p editor-egui -- somefile.txt
 ```
 
-**It opens a window, and that is all so far.** The document is not drawn and no key does anything:
-the renderer is stage 3, the key map stage 4 and the headless tests stage 5 of
-[`doc/plan-egui-shell.md`](doc/plan-egui-shell.md).
+**It shows the document but cannot yet edit it.** The text, caret and status line are rendered from
+the core; no key does anything, because the key map is stage 4 and the full headless test suite is
+stage 5 of [`doc/plan-egui-shell.md`](doc/plan-egui-shell.md).
 
 ### Linux GUI — GTK4 + libadwaita
 

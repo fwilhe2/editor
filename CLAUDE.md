@@ -13,13 +13,13 @@ outstanding.
 
 `ui_egui/` is **under construction** — a deliberately non-native, portable GUI, decided on in
 [`doc/decision-egui-shell.md`](doc/decision-egui-shell.md) and being built in the stages of
-[`doc/plan-egui-shell.md`](doc/plan-egui-shell.md). Stages 1 and 2 have landed: the crate is a
+[`doc/plan-egui-shell.md`](doc/plan-egui-shell.md). Stages 1 to 3 have landed: the crate is a
 workspace member, `eframe`/`egui_kittest` are pinned in `[workspace.dependencies]`, and `edit-egui`
-opens a window whose title tracks the document, with the observer wired to `request_repaint`. It has
-**no renderer and no key map yet** — stages 3 and 4 — and the headless `egui_kittest` tests that
-justify the whole shell are stage 5. Do not document it as working until they exist.
+opens a window that renders the document from `get_viewport` with a status line and a caret. It has
+**no key map yet** — stage 4 — and the full headless `egui_kittest` suite that justifies the whole
+shell is stage 5. Do not document it as working until that exists.
 
-Three things about this shell are already load-bearing and easy to undo by accident:
+Five things about this shell are already load-bearing and easy to undo by accident:
 
 - **`egui::Context` is the whole observer bridge.** It is `Clone + Send + Sync`, so `Notifier` holds
   one directly — no channel as in GTK, no `AtomicBool` as in the TUI and browser shells — and
@@ -29,6 +29,13 @@ Three things about this shell are already load-bearing and easy to undo by accid
 - **Driving a bare `egui::Context` in a test panics on drop** unless `output.textures_delta` is
   cleared: a pass hands back textures the caller is supposed to upload. `egui_kittest` handles this,
   which is one more reason stage 5's tests go through the harness.
+- **The document is painted, so it carries its own `WidgetInfo`.** `Painter::text` produces no
+  widget and therefore no accessibility node: without the
+  `allocate_rect` + `WidgetInfo::labeled` in `draw_document`, a screen reader and the test harness
+  both see an empty window. `the_document_is_announced_to_the_accessibility_tree` pins it.
+- **No `TextEdit` and no `ScrollArea`, ever.** The first owns a `String` and the second a scroll
+  position; the core owns both. This is the same rule that keeps the `GtkTextView` read-only and
+  keeps `contenteditable` out of `ui_web/`.
 
 **There is no MSRV.** `rust-version` was removed from the workspace manifest, and the pins that
 served it are gone with it: `ratatui` is on 0.30, `instability` and `darling` are unpinned. The
@@ -45,7 +52,7 @@ and fast. Add it when the core gains work that must not block a UI thread.
 ## Commands
 
 ```sh
-cargo test --workspace          # 88 tests; needs libgtk-4-dev + libadwaita-1-dev for ui_linux
+cargo test --workspace          # 93 tests; needs libgtk-4-dev + libadwaita-1-dev for ui_linux
 cargo test -p editor-core       # one crate
 cargo test undo                 # single test by name substring
 cargo run -p editor-cli -- --help

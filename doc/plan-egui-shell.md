@@ -141,6 +141,15 @@ Then the same shape as every other shell:
    that way), total lines, char count, and undo/redo shown as disabled when `can_undo`/`can_redo` say
    so.
 
+**Painting the text costs it its accessibility node, and that has to be paid back.** Verified while
+building stage 3: a `Painter::text` call produces no widget, so a screen reader — and
+`egui_kittest`, which reads the same AccessKit tree — finds an empty window. Claim the text area with
+`ui.allocate_rect(rect, Sense::click())` and hand the response a
+`WidgetInfo::labeled(WidgetType::Label, true, visible_lines.join("\n"))`. That makes the document
+both announceable and queryable, and stage 4 needs the response anyway to locate a click. Without it
+stage 5 cannot assert on anything the user can see, which would take most of this shell's
+justification with it.
+
 Two widgets are **banned in this shell**, both for rule 1:
 
 - **`egui::TextEdit`** owns a `String` and keeps a `TextEditState` in egui's memory. It is this
@@ -290,7 +299,13 @@ Written down rather than implied, per the checklist:
   `&mut Ui`. Every tutorial and almost any generated code will be pre-0.36 and will fail with
   `E0407: method 'update' is not a member of trait 'App'`. Read
   `~/.cargo/registry/src/*/eframe-0.36.1/src/epi.rs` rather than trusting recall — that is how this
-  was found.
+  was found. Two more of the same kind, each found by the compiler rather than by reading:
+  **`TopBottomPanel` and `SidePanel` are gone**, replaced by one `Panel` type
+  (`egui::Panel::bottom("status")`), and font metrics need **`Context::fonts_mut`**, because
+  `glyph_width` and `row_height` take `&mut self` while `Context::fonts` hands out a shared
+  reference.
+- **Painted text is invisible to AccessKit** — see stage 3. Costs the screen reader and the whole
+  test harness if not paid back with a `WidgetInfo`.
 - **eframe's default backend is wgpu**, not glow; `glow` is opt-in and the defaults must be turned
   off to avoid the wgpu stack. Turning them off also drops `accesskit`, which the shell wants — put
   it back explicitly.
