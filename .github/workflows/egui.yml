@@ -1,0 +1,49 @@
+name: ui_egui
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Like the TUI: pure Rust on every platform, so it is built on every runner
+  # rather than cross-compiled from one. Unlike every other GUI here, there is
+  # no system-package step — eframe's glow backend and winit's X11/Wayland
+  # support are loaded at runtime, so nothing has to be installed to build or
+  # test this shell. That is half the reason it exists.
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # The other half of the reason: these drive the real shell through
+      # egui_kittest and assert on what it renders. No display server is set up
+      # here and none is wanted — a run that needed one would mean the harness
+      # had stopped being headless. This is the first GUI in the repository
+      # whose behaviour CI checks rather than merely compiles.
+      - name: Test
+        run: cargo test -p editor-egui --all-targets
+
+      - name: Build
+        run: cargo build --release -p editor-egui
+
+      - name: Upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: edit-egui-${{ matrix.os }}
+          path: |
+            target/release/edit-egui
+            target/release/edit-egui.exe
+          if-no-files-found: error

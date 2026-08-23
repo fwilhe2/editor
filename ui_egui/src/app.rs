@@ -343,6 +343,21 @@ impl eframe::App for App {
     }
 }
 
+/// What a green run here does and does not prove.
+///
+/// `egui_kittest` runs the *whole* egui pass — the same layout and the same text
+/// shaping with the same bundled fonts the app uses — and stops before rasterising.
+/// So these tests cover behaviour and layout: what the shell does with a key, what
+/// ends up in the core, and what the frame says it is showing. They cover **no
+/// pixels**. Nothing here can see a colour, a font that failed to load, or a caret
+/// drawn one line too low, and no assertion below should be read as if it could.
+///
+/// That is the same caveat `ui_web/smoke.js` carries about jsdom's zero geometry,
+/// and it points the same way: after a change to how this shell *looks*, open it.
+///
+/// The compensation is that everything else is checkable on any host, in about a
+/// third of a second, with `DISPLAY` and `WAYLAND_DISPLAY` unset — which is the
+/// reason this shell exists. See `doc/decision-egui-shell.md`.
 #[cfg(test)]
 mod tests {
     use super::*;

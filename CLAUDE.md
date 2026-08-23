@@ -8,40 +8,14 @@ together — see [`doc/shared-core-native-shell.md`](doc/shared-core-native-shel
 ## Status
 
 Every shell in the original plan exists: `core/`, `cli/`, `ffi/`, `ui_tui/`, `ui_linux/`,
-`ui_windows/` and `ui_mac/`, plus `ui_web/`, which was planned later. `ui_qt/` (see below) is still
-outstanding.
+`ui_windows/` and `ui_mac/`, plus `ui_web/` and `ui_egui/`, both planned later. **`ui_qt/` (see
+below) is the only outstanding one.**
 
-`ui_egui/` is **under construction** — a deliberately non-native, portable GUI, decided on in
-[`doc/decision-egui-shell.md`](doc/decision-egui-shell.md) and being built in the stages of
-[`doc/plan-egui-shell.md`](doc/plan-egui-shell.md). Stages 1 to 5 have landed: `edit-egui` renders
-the document from `get_viewport`, handles keys, clicks and the wheel, and carries 33 tests that drive
-the real shell through `egui_kittest` with no display and no GPU — the first GUI in this repository
-whose behaviour CI can check rather than merely compile. **Stage 6, its own workflow, is
-outstanding**, so nothing runs those tests automatically yet.
-
-Six things about this shell are already load-bearing and easy to undo by accident:
-
-- **`egui::Context` is the whole observer bridge.** It is `Clone + Send + Sync`, so `Notifier` holds
-  one directly — no channel as in GTK, no `AtomicBool` as in the TUI and browser shells — and
-  `request_repaint` coalesces by itself.
-- **Nothing may ask for a repaint on a timer.** The core pushes; a continuous-repaint mode would make
-  this the one shell that polls. `an_idle_shell_stops_asking_to_be_repainted` pins it.
-- **Driving a bare `egui::Context` in a test panics on drop** unless `output.textures_delta` is
-  cleared: a pass hands back textures the caller is supposed to upload. `egui_kittest` handles this,
-  which is one more reason stage 5's tests go through the harness.
-- **The document is painted, so it carries its own `WidgetInfo`.** `Painter::text` produces no
-  widget and therefore no accessibility node: without the
-  `allocate_rect` + `WidgetInfo::labeled` in `draw_document`, a screen reader and the test harness
-  both see an empty window. `the_document_is_announced_to_the_accessibility_tree` pins it.
-- **No `TextEdit` and no `ScrollArea`, ever.** The first owns a `String` and the second a scroll
-  position; the core owns both. This is the same rule that keeps the `GtkTextView` read-only and
-  keeps `contenteditable` out of `ui_web/`.
-- **`App::frame(&mut Ui)` exists so the tests can drive the whole shell.** `eframe::App::ui` only
-  delegates to it, because an `eframe::Frame` cannot be built outside eframe. Keep the logic in
-  `frame`, or the harness stops seeing what the app really does.
-- **The status line uses labels, not buttons.** This shell reads raw events rather than owning a
-  focused text widget, so a focusable widget there would take Enter and the arrows away from the
-  document.
+`ui_egui/` is complete — all seven stages of [`doc/plan-egui-shell.md`](doc/plan-egui-shell.md) have
+landed, including its workflow and the documentation. Its invariants have their own section below,
+like every other shell's. It cost the core nothing: no new capability, hence no new CLI subcommand,
+which is what the parity rule predicts for a shell that adds a toolkit rather than a platform
+capability.
 
 **There is no MSRV.** `rust-version` was removed from the workspace manifest, and the pins that
 served it are gone with it: `ratatui` is on 0.30, `instability` and `darling` are unpinned. The
@@ -102,7 +76,7 @@ text is readable but the layout is not; for layout, look at it yourself.
 ## Scope
 
 This is a **prototype of the architecture concept, not a competitive editor**. The feature set is
-deliberately minimal — it exists to prove that one Rust core can drive six very different
+deliberately minimal — it exists to prove that one Rust core can drive seven very different
 front-ends. When in doubt, do not add features; add them to the core only if every shell (including
 the CLI) can expose them. Breadth across platforms is the deliverable; depth of editing features is
 explicitly not.
@@ -135,7 +109,7 @@ ui_linux/     ✅ editor-gtk   — the `edit-gtk` binary (GTK4 + libadwaita)
 ui_windows/   ✅ EditorApp    — C# / WinUI 3, consuming generated bindings
 ui_mac/       ✅ EditorApp    — SwiftUI (SwiftPM package), generated Swift bindings
 ui_web/       ✅ editor-web   — wasm32 + wasm-bindgen, rendered into the DOM
-ui_egui/      🚧 editor-egui  — the `edit-egui` binary (eframe), portable, native to nothing
+ui_egui/      ✅ editor-egui  — the `edit-egui` binary (eframe), portable, native to nothing
 ui_qt/        ⬜ Qt shell (see "Planned: the Qt shell")
 ```
 
@@ -257,11 +231,20 @@ another.
 ## CI
 
 Every shell gets its own GitHub Actions workflow that builds it: `core-cli.yml` (three OS runners
-plus one workspace-wide fmt/clippy job), `tui.yml` (three OS runners), `linux.yml` (Ubuntu only),
-`windows.yml` and `macos.yml` (Windows/macOS only — Rust library, then bindings, then the FFI smoke
-test, then the app; the smoke test running before the UI build is what separates a binding failure
-from a XAML/SwiftUI one), and `web.yml` (Ubuntu only, because the browser is not an operating
-system: wasm is the same artifact everywhere).
+plus one workspace-wide fmt/clippy job), `tui.yml` and `egui.yml` (three OS runners each, no system
+packages), `linux.yml` (Ubuntu only), `windows.yml` and `macos.yml` (Windows/macOS only — Rust
+library, then bindings, then the FFI smoke test, then the app; the smoke test running before the UI
+build is what separates a binding failure from a XAML/SwiftUI one), and `web.yml` (Ubuntu only,
+because the browser is not an operating system: wasm is the same artifact everywhere).
+
+`egui.yml` is the only one whose test step checks a GUI's *behaviour* rather than compiling it, and
+it deliberately sets up no display — a run that needed one would mean the harness had stopped being
+headless. Being portable is not a reason to build it once: it still gets three runners, because
+what a portable toolkit centralises is verification, not distribution. The Ubuntu job alone is the
+complete check; the other two are for artifacts and platform surprises.
+
+Adding `ui_egui` also made the shared **lint** job compile eframe on every push, since it does say
+`--workspace`. That cost is expected and `Swatinem/rust-cache` absorbs it.
 
 Two traps when adding a shell with system dependencies: the shared jobs must stop using
 `--workspace` where the new crate cannot build (the core/CLI test job names its crates for exactly
@@ -449,6 +432,74 @@ pinned by hand.
 - Known gaps: no IME composition (a key that produces one non-control character is text, everything
   else is a named key), no touch keyboard on mobile (there is no input element to focus), and no
   scrollbar — the wheel and the caret are the only ways to move the view.
+
+## The portable shell (`ui_egui/`, binary `edit-egui`)
+
+`eframe`/`egui`, in immediate mode, and the only shell here that is **deliberately not native** —
+decided on in [`doc/decision-egui-shell.md`](doc/decision-egui-shell.md), built in the stages of
+[`doc/plan-egui-shell.md`](doc/plan-egui-shell.md). It is the one row of "Platform conventions" in
+the checklist that is knowingly unmet, and the decision record says why. It buys two things no
+native shell here offers: **no system dependencies on any platform**, and a behaviour test suite
+that runs headlessly.
+
+**egui is reached through `eframe::egui`**, never as a direct dependency — the same rule as
+`ratatui::crossterm` and `libadwaita::gtk`. `egui_kittest` is the one version that rule cannot
+police, because it is not re-exported: `eframe`, `egui` and `egui_kittest` must share a minor
+version, so bump `egui_kittest` by hand whenever `eframe` moves.
+
+- **`egui::Context` is the whole observer bridge.** It is `Clone + Send + Sync`, so `Notifier`
+  (`main.rs`) holds one directly — no channel as in GTK, no `AtomicBool` as in the TUI and browser
+  shells — and `request_repaint` coalesces by itself.
+- **Nothing may ask for a repaint on a timer.** The core pushes; a continuous-repaint mode would
+  make this the one shell that polls. `an_idle_shell_stops_asking_to_be_repainted` pins it.
+- **No `TextEdit` and no `ScrollArea`, ever.** The first owns a `String` and the second a scroll
+  position; the core owns both. This is the same rule that keeps the `GtkTextView` read-only and
+  keeps `contenteditable` out of `ui_web/`. Immediate mode is not an exemption — both keep their
+  state in egui's memory between frames.
+- **The document is painted, so it carries its own `WidgetInfo`.** `Painter::text` produces no
+  widget and therefore no accessibility node: without the `allocate_rect` + `WidgetInfo::labeled`
+  in `draw_document`, a screen reader and the test harness both see an empty window.
+  `the_document_is_announced_to_the_accessibility_tree` pins it, and it is what every other
+  behaviour test queries — so breaking accessibility here breaks the suite, which is the right way
+  round.
+- **`App::frame(&mut Ui)` exists so the tests can drive the whole shell.** `eframe::App::ui` only
+  delegates to it, because an `eframe::Frame` cannot be built outside eframe. Keep the logic in
+  `frame`, or the harness stops seeing what the app really does.
+- **Input is handled before painting, inside the same frame**, and `follow_cursor` is called from
+  input handling only. In immediate mode both happen in one function, so the ordering is deliberate
+  rather than structural: paint-then-scroll would make a wheel scroll away from the caret snap
+  straight back, which is the rule `refresh()` enforces in GTK and `render` in `ui_web/`.
+- **Metrics are re-measured every frame** (`Self::metrics`), because egui's zoom factor changes
+  `glyph_width` and `row_height` and nothing announces it — the same reason `ui_web/` re-measures
+  its `#probe`. `layout::Metrics::new` floors both at a non-zero value, or the first frame divides
+  by zero.
+- **The status line uses labels, not buttons.** This shell reads raw events rather than owning a
+  focused text widget, so a focusable widget there would take Enter and the arrows away from the
+  document.
+- **Driving a bare `egui::Context` in a test panics on drop** unless `output.textures_delta` is
+  cleared: a pass hands back textures the caller is supposed to upload. `egui_kittest` handles this,
+  which is one more reason the behaviour tests go through the harness rather than the context.
+
+Two API notes for 0.36, both of which invalidate anything written against an older egui:
+`App::update(&mut self, ctx, frame)` is now `App::ui(&mut self, ui, frame)`, and `TopBottomPanel`
+and `SidePanel` are gone, replaced by `egui::Panel::bottom(…)`. Read
+`~/.cargo/registry/src/*/eframe-*/src/epi.rs` rather than trusting recall.
+
+`keymap.rs` and `layout.rs` are widget-free and unit-tested, like their `ui_web/` counterparts.
+`app.rs`'s tests are the interesting ones: they drive the real shell through `egui_kittest` with no
+display and no GPU, and they are what makes this the first GUI here whose behaviour CI checks. They
+prove **no pixels** — the harness stops before rasterising — so look at the window after a change to
+how it looks. That caveat is written at the test module.
+
+They live in `src/app.rs` and not in the `tests/behaviour.rs` the plan named, because this crate has
+only a `[[bin]]` target and an integration test has no library to link against. Adding a `lib.rs`
+purely to move them would be the wrong trade; if the file ever grows too large, split the shell into
+`lib.rs` + a thin `main.rs` deliberately rather than as a side effect.
+
+Known gaps, all deliberate: no scrollbar, no file dialog (the path comes from `argv`, as in
+`edit-tui` and `edit-gtk`, which is why this shell needed no new core capability), no selection, no
+clipboard, no IME, no horizontal scrolling, and no egui-on-wasm build — `ui_web/` is the browser
+shell and a canvas would be a worse one.
 
 ## Planned: the Qt shell (`ui_qt/`)
 

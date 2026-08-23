@@ -1,13 +1,14 @@
 # editor
 
 A prototype of the **Shared Core, Native Shell** architecture: one Rust library holds all the
-editing logic, and six front-ends render it — a CLI, a terminal UI, a GTK4/GNOME app, a WinUI 3 app,
-a SwiftUI app, and a browser app compiled to WebAssembly.
+editing logic, and seven front-ends render it — a CLI, a terminal UI, a GTK4/GNOME app, a WinUI 3
+app, a SwiftUI app, a browser app compiled to WebAssembly, and a portable GUI that is native to
+nothing.
 
 It is a text editor only incidentally. The feature set is deliberately tiny — insert, backspace,
 cursor movement, undo/redo, save — because the point is not the editor. The point is that one core
-drives six very different UIs across three operating systems and the web, two of them across an FFI
-boundary, without any of them owning a byte of document state.
+drives seven very different UIs across three operating systems and the web, two of them across an
+FFI boundary, without any of them owning a byte of document state.
 
 **This is a work in progress.** The argument below is the reason it exists.
 
@@ -17,6 +18,7 @@ boundary, without any of them owning a byte of document state.
 [![ui_windows](https://github.com/fwilhe2/editor/actions/workflows/windows.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/windows.yml)
 [![ui_mac](https://github.com/fwilhe2/editor/actions/workflows/macos.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/macos.yml)
 [![ui_web](https://github.com/fwilhe2/editor/actions/workflows/web.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/web.yml)
+[![ui_egui](https://github.com/fwilhe2/editor/actions/workflows/egui.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/egui.yml)
 
 ## Why
 
@@ -66,7 +68,7 @@ Cargo dependency                wasm-bindgen               UniFFI
  edit       CLI                  editor-web           EditorApp (C#)
  edit-tui   terminal             wasm · DOM           WinUI 3 · Windows
  edit-gtk   GTK4 / GNOME                              EditorApp (Swift)
- edit-egui  portable                            SwiftUI · macOS
+ edit-egui  portable                                  SwiftUI · macOS
  ui_qt      planned
 ```
 
@@ -135,8 +137,7 @@ cargo run --release -p editor-egui -- somefile.txt
 ```
 
 It edits: arrows move, typing inserts, Ctrl/⌘+Z and +Y undo and redo, +S saves, +Q quits (twice if
-there are unsaved changes), the wheel scrolls and a click places the caret. **Still missing its own
-CI workflow**, which is stage 6 of [`doc/plan-egui-shell.md`](doc/plan-egui-shell.md).
+there are unsaved changes), the wheel scrolls and a click places the caret.
 
 It is also the one GUI here whose behaviour is *tested* rather than merely compiled — 33 tests that
 drive the real shell, headlessly, with no display and no GPU:
@@ -144,6 +145,9 @@ drive the real shell, headlessly, with no display and no GPU:
 ```sh
 cargo test -p editor-egui       # needs no window, and passes without one
 ```
+
+Those run on all three OS runners in CI, which is why this is the first GUI in the repository whose
+badge above means more than "it still compiles".
 
 ### Linux GUI — GTK4 + libadwaita
 
@@ -268,28 +272,32 @@ swift build --package-path ui_mac --product FfiSmoke \
 All three run before their app build in CI, so a failure tells you immediately whether the bug is in
 the bindings or in the UI code.
 
+The egui shell goes further: its tests drive the real app, not a boundary beside it. They run the
+whole egui pass — the same layout and text shaping the window uses — feed it synthetic keys, clicks
+and wheel events, and read back the accessibility tree, all with no display and no GPU:
+
+```sh
+env -u DISPLAY -u WAYLAND_DISPLAY cargo test -p editor-egui
+```
+
+They stop before rasterising, so they prove behaviour and prove nothing about pixels. That is the
+same caveat jsdom carries, and it points the same way: after a change to how a UI *looks*, open it.
+
 ## Status and limits
 
 This is a prototype, and it is honest about being one. Known gaps:
 
-- No horizontal scrolling in the TUI; no mouse-wheel scrolling in the desktop GUI shells (the
-  browser shell does have it).
+- No horizontal scrolling in the TUI; no mouse-wheel scrolling in the WinUI and SwiftUI shells (the
+  browser and egui ones do have it).
 - The browser shell has no IME composition, no touch keyboard on mobile, and no scrollbar. A page
   also cannot write back to the file it opened — saving is a download, which is the platform's rule.
+- The egui shell has no scrollbar, no file dialog and no IME; its path comes from `argv`, like the
+  terminal and GTK ones.
 - Line endings are assumed to be LF.
 - No search, selection, clipboard, multiple documents or syntax highlighting.
 
-Two more shells are on the way, and each stretches the architecture in a different direction:
+One more shell is on the way:
 
-- **egui** (`ui_egui/`) — under construction, and the one shell here that is **deliberately not
-  native**. It looks and behaves the same on every platform, which is exactly the compromise the
-  argument above is against; it is being built anyway, for two things no native shell can offer. It
-  needs no system dependencies anywhere, and its behaviour can be tested headlessly — making it the
-  first GUI in this repository that CI *runs* rather than merely compiles, and the first one an agent
-  can verify without a human looking at a screen. It is also the control group the argument above has
-  been missing: a portable shell, built from the same core in the same style, to compare the native
-  ones against. See [`doc/decision-egui-shell.md`](doc/decision-egui-shell.md) for why that trade is
-  worth making and [`doc/plan-egui-shell.md`](doc/plan-egui-shell.md) for how it is being built.
 - **Qt** (`ui_qt/`) — planned: a second desktop toolkit, and the KDE/Plasma conventions that come
   with it. Likely via [`cxx-qt`](https://github.com/KDAB/cxx-qt), which would keep it a plain Rust
   crate depending on the core directly, like the GTK and terminal shells. See `CLAUDE.md` for the
@@ -297,11 +305,31 @@ Two more shells are on the way, and each stretches the architecture in a differe
   not replace it and the two have opposite purposes: Qt exists to reach a *second* set of native
   conventions, egui to reach none of them.
 
-The browser shell (`ui_web/`) was the previous entry on that list. It is the honest test of the
-argument above — the web is one more platform with conventions of its own, not an excuse to stop
-having any — and it proved the two boundaries that mattered: `get_viewport` survives a DOM renderer
-unchanged, and the core's file API grew a filesystem-free half (`load_text` / `save_to_string`) that
-the CLI exposes as `import` / `export`, because a capability in one shell alone is a bug.
+The two shells that came off that list most recently are finished, and each stretched the
+architecture in a different direction.
+
+The **browser shell** (`ui_web/`) is the honest test of the argument above — the web is one more
+platform with conventions of its own, not an excuse to stop having any — and it proved the two
+boundaries that mattered: `get_viewport` survives a DOM renderer unchanged, and the core's file API
+grew a filesystem-free half (`load_text` / `save_to_string`) that the CLI exposes as
+`import` / `export`, because a capability in one shell alone is a bug.
+
+The **egui shell** (`ui_egui/`) is the one that is **deliberately not native**. It looks and behaves
+the same everywhere, which is exactly the compromise the argument above is against; it was built
+anyway, for two things no native shell here can offer. It needs no system dependencies on any
+platform — a Rust toolchain is the whole list — and its behaviour is *tested* rather than merely
+compiled, headlessly, with no display and no GPU. That makes it the first GUI in this repository
+that CI runs, and the first an agent can verify without a human looking at a screen. It cost the core
+nothing: no new capability, no new API, and therefore no new CLI subcommand — the seventh shell was a
+transcription of the first six.
+
+It is also the control group the argument above was missing. Having one portable shell built from the
+same core in the same style is what makes "native feels different" a claim you can check rather than
+assert — run `edit-egui` and `edit-gtk` side by side and the difference is the argument. What it does
+not do is weaken it: the tests prove behaviour, never appearance, and behaviour is not the part
+platform conventions are about. See [`doc/decision-egui-shell.md`](doc/decision-egui-shell.md) for
+why that trade is worth making and [`doc/plan-egui-shell.md`](doc/plan-egui-shell.md) for how it was
+built.
 
 `CLAUDE.md` documents the architecture in more depth, including the invariants worth preserving and
 the traps each shell hides. [`doc/shared-core-native-shell.md`](doc/shared-core-native-shell.md)

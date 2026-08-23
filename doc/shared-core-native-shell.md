@@ -1,9 +1,9 @@
 # Building an app as a shared core with native shells
 
-A guide for agents. This repository is the worked example — one Rust core (`core/`) driving six
-front-ends: a CLI, a terminal UI, GTK4/GNOME, WinUI 3, SwiftUI and a WebAssembly browser app. What
-follows is what the pattern actually demands, in the order you need it, with the traps that cost
-time and the checks that catch them.
+A guide for agents. This repository is the worked example — one Rust core (`core/`) driving seven
+front-ends: a CLI, a terminal UI, GTK4/GNOME, WinUI 3, SwiftUI, a WebAssembly browser app, and one
+portable GUI that is native to nothing. What follows is what the pattern actually demands, in the
+order you need it, with the traps that cost time and the checks that catch them.
 
 The economics are the point. A genuinely native UI per platform used to mean paying for a different
 language, toolkit and build system three or four times over, which almost nobody could justify. That
@@ -20,7 +20,7 @@ your effort there.
    Rust shells                     wasm-bindgen shell        foreign shells
    (Cargo dependency)              (Cargo dependency,        (generated bindings
                                     bound to the DOM)         from a facade crate)
-   CLI · TUI · GTK · Qt                 browser              Swift · C# · Kotlin
+   CLI · TUI · GTK · egui · Qt          browser              Swift · C# · Kotlin
 ```
 
 Three classes, and knowing which one you are writing decides everything else:
@@ -40,19 +40,22 @@ quit" flag), the core is missing something.
 Break any of these and the pattern quietly stops paying.
 
 1. **One source of truth, and it is never the toolkit.** Every mature UI toolkit ships a text widget
-   that owns a document: `GtkTextView`, `TextBox`, `QPlainTextEdit`, `contenteditable`. Make it
-   read-only and refill it from the core on every repaint. Let it edit itself and you have two
-   documents that disagree, and the toolkit will win the argument.
+   that owns a document: `GtkTextView`, `TextBox`, `QPlainTextEdit`, `contenteditable`,
+   `egui::TextEdit`. Make it read-only and refill it from the core on every repaint — or, where the
+   toolkit lets you paint text yourself, do not use the widget at all. Let it edit itself and you
+   have two documents that disagree, and the toolkit will win the argument. Immediate mode is no
+   exemption: `egui::TextEdit` keeps a `String` and a cursor in the framework's own memory between
+   frames, which is the same trap wearing different clothes.
 2. **Reads go through a windowed API.** Here that is `get_viewport(start, end)`. Never expose a
    getter that hands a shell the whole document; the moment one exists, three shells will use it and
    the data structure underneath stops mattering. (Saving is the one honest exception — see rule 8.)
 3. **Undo/redo lives in the core**, as a command pattern with the inverse falling out of the action
-   itself. Six shells cannot each implement history and stay consistent.
+   itself. Seven shells cannot each implement history and stay consistent.
 4. **The core pushes, shells never poll.** Declare an observer trait in Rust; implement it in Rust
    directly, as a UniFFI foreign trait in Swift/C#, and as a flag-plus-repaint in wasm.
 5. **Whatever any GUI can do, the CLI can do.** This is the ratchet that keeps capabilities out of
    shells. Adding a feature means: core first, CLI subcommand in the same change, then the UI. A
-   UI-only feature is a bug, and it is the bug that eventually turns one core into six.
+   UI-only feature is a bug, and it is the bug that eventually turns one core into seven.
 6. **Shells must diverge.** Menu bar placement, redo shortcuts, close-confirmation, colour scheme —
    consult each platform's current guidelines rather than porting your first shell's habits. If all
    your UIs look alike you have paid for native and shipped cross-platform.
@@ -66,7 +69,10 @@ Break any of these and the pattern quietly stops paying.
    cursor and clear the history, or undo will resurrect text the document never had.
 9. **Never cross-compile the apps.** Each shell builds on the OS it runs on, in its own CI job. wasm
    is not an exception to this rule, it is outside it: `wasm32-unknown-unknown` *is* the target it
-   runs on, so one Linux job builds the artifact every platform gets.
+   runs on, so one Linux job builds the artifact every platform gets. A *portable* toolkit is not an
+   exception either, and it is the one most likely to look like one: a shell that runs everywhere
+   still gets a build per OS, because what a portable toolkit centralises is **verification**, not
+   distribution — see the egui row in §5.
 
 ## 3. Order of work
 
@@ -89,10 +95,17 @@ mistakes are still free.
 6. **The browser shell last** if you want the strongest test of the boundary: a DOM renderer is the
    furthest thing from your data structure, and it has no filesystem to lean on.
 
+There is a case for one more, and for building it earlier than its usefulness suggests: **a portable
+immediate-mode shell** (egui here), which is the only GUI whose behaviour a machine can check (§5).
+It is not a platform, so it does not extend the argument for going native — but it needs no system
+dependencies, it makes every later refactor of the core verifiable through a real UI, and it is the
+control group that lets "native feels different" be demonstrated rather than asserted. Build it
+after the first native shell, so you already know what you are comparing against.
+
 ## 4. Shapes worth copying
 
 These recur in every shell. Write them the same way each time; the repetition is the point, because
-it makes the sixth shell a transcription rather than a design problem.
+it makes the seventh shell a transcription rather than a design problem.
 
 **A widget-free keymap module.** Key plus modifiers in, `UiAction` out; a second function applies the
 action to the core and returns whatever the *shell* must handle (save, quit, open a picker).
@@ -102,9 +115,11 @@ pub fn action_for(key: Key, mods: Modifiers) -> Option<UiAction>;
 pub fn apply(action: UiAction, editor: &Editor) -> Option<Request>;
 ```
 
-It unit-tests with no display, no terminal and no browser, which makes it the only part of a GUI
-shell you can test cheaply — so put everything decidable there. (`ui_linux/src/keymap.rs`,
-`ui_web/src/keymap.rs`.)
+It unit-tests with no display, no terminal and no browser, which in a retained-mode shell makes it
+the only part you can test cheaply — so put everything decidable there. (`ui_linux/src/keymap.rs`,
+`ui_web/src/keymap.rs`, `ui_egui/src/keymap.rs`.) Write it this way even in an immediate-mode shell,
+where the whole app is testable: a failing unit test names the rule that broke, and a failing
+end-to-end one only tells you the app is wrong.
 
 **A pixel-arithmetic module** for shells that place a caret themselves: metrics in, positions out.
 Caret placement, click hit-testing and wheel-delta conversion are pure functions of two measured
@@ -119,6 +134,7 @@ thread":
 | TUI | an `AtomicBool` the event loop checks before drawing |
 | GTK | `async_channel` drained by `spawn_future_local` |
 | wasm | an `AtomicBool` plus `requestAnimationFrame` — the flag doubles as "a frame is already scheduled" |
+| egui | the `egui::Context` itself: it is `Clone + Send + Sync`, so the observer holds one and calls `request_repaint` |
 | Swift / C# | a UniFFI foreign trait implemented in the shell's own language |
 
 Coalesce: one keystroke must produce one repaint, even when it notifies twice.
@@ -139,6 +155,7 @@ seventeen assertions:
 | Rust ↔ C# | `ffi/csharp-smoke` (console app over the `.so`/`.dll`) | Linux, macOS, Windows |
 | Rust ↔ Swift | `ui_mac`'s `FfiSmoke` product | Linux and macOS |
 | Rust ↔ browser | `ui_web/smoke.js` — the real `.wasm` against the real page in jsdom | anywhere with node |
+| A GUI's actual behaviour | `ui_egui/`'s `egui_kittest` tests — the real app, no display, no GPU | anywhere the crate builds |
 
 Because they run before the app build in CI, a red job tells you immediately whether the bug is in
 the bindings or in the XAML/SwiftUI/CSS. That distinction is worth the whole cost of writing them.
@@ -150,13 +167,25 @@ What this buys per host:
 | core, CLI, TUI, wasm module | native | native |
 | GTK build + keymap tests | native (needs `libgtk-4-dev`, `libadwaita-1-dev`) | container (§5.1) |
 | C# and Swift FFI boundaries | native, both | native, both |
+| an immediate-mode GUI's *behaviour* | native, headless | native, headless |
 | SwiftUI as a running app | ✗ | native |
 | WinUI / XAML | ✗ | ✗ (CI on Windows only) |
 | how any GUI *looks* | only on that platform | only on that platform |
 
-Be honest about that last row. A smoke test proves wiring, never appearance; jsdom in particular has
-no layout engine, so every rectangle it reports is zero. Open the real app before claiming a UI
-change works.
+The last row is the honest one, and the row above it is the interesting one. A smoke test proves
+wiring, never appearance; jsdom in particular has no layout engine, so every rectangle it reports is
+zero. Open the real app before claiming a UI change works.
+
+The exception is worth understanding, because it is the one gap in this table that an architectural
+choice can close. A retained-mode toolkit hides its state inside native objects that need a display
+server to exist, so the most you can test off-screen is the pure functions beside it — a keymap, some
+arithmetic. An **immediate-mode** GUI has no such objects: the frame is a function of the state, so a
+harness can call that function, feed it synthetic events and read the accessibility tree it produces,
+on any host, in milliseconds. That makes an agent able to verify a GUI change without a human looking
+at a screen — which is a real reason to keep such a shell around even when it is native to nothing,
+and it is why this repository has one. Two things it still does not buy: it renders no pixels, so it
+says nothing about appearance, and it is that shell's behaviour it verifies, not the native shells'.
+What generalises is the core underneath.
 
 ### 5.1 Linux containers with podman
 
@@ -202,6 +231,11 @@ put the target directory in a container volume rather than on the mount.
 - **Browser:** jsdom, with two caveats. Copy every DOM constructor onto `globalThis` (the generated
   glue type-checks with `instanceof Window`, `instanceof HTMLButtonElement`), and expect zeroed
   geometry, which is exactly why the metric code needs a non-zero floor.
+- **An immediate-mode GUI:** its own test harness, driving the real app in-process. Two conditions
+  make it work, and both are on you: the per-frame function must be callable outside the framework's
+  event loop (keep the logic in a `frame(&mut Ui)` that the framework's entry point merely delegates
+  to), and painted text must be given back the accessibility node that painting it costs — otherwise
+  the harness, like a screen reader, finds an empty window.
 - **Everything else:** the CLI. It is scriptable by design, and `--format json` exists so an agent can
   assert on `changed` and `written` instead of parsing prose.
 
@@ -223,6 +257,18 @@ put the target directory in a container volume rather than on the mount.
 - Restore the terminal on *every* exit path, panic included, and restore before printing an error.
 - Do not hold a `RefCell` borrow across a call that borrows it mutably — `set(x.borrow().clone())` is
   a guaranteed panic, and it will be in the handler you tested least.
+
+**Immediate mode**
+
+- Painting text yourself costs it its accessibility node, and a screen reader is not the only thing
+  that notices: the test harness reads the same tree and finds an empty window. Claim the area as a
+  widget and give it the visible text as a label.
+- Input and painting happen in one function, so the ordering that is structural elsewhere becomes a
+  decision: handle events, `follow_cursor`, *then* read the offset and paint.
+- Never repaint on a timer. An immediate-mode shell that redraws unconditionally is polling — it
+  will look correct and violate rule 4, and it should idle at zero frames a second.
+- Keep the per-frame function callable outside the framework's event loop, since that is what makes
+  the shell testable at all (§5.2).
 
 **Foreign shells**
 
@@ -257,6 +303,8 @@ put the target directory in a container volume rather than on the mount.
 - [ ] Repaints come from the observer, never a poll or a timer.
 - [ ] `follow_cursor` is called from input handling only, never from the repaint.
 - [ ] Platform conventions taken from that platform's current guidelines, not from a sibling shell.
+      A portable shell is the one allowed exception, and only if a decision record says so — "it has
+      no platform" is a choice to write down, not a box to leave unticked quietly.
 - [ ] Any new capability landed in the core and the CLI in the same change.
 - [ ] A UI-free smoke test for its boundary, running before the app build.
 - [ ] Its own workflow, on its own OS runner, never cross-compiled.

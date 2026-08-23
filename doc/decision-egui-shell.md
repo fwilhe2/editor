@@ -1,7 +1,13 @@
 # Decision: a portable GUI shell, on egui
 
-**Status:** proposed, 2026-08-23. The first decision record in this repository; if a second one is
-ever needed, this is the shape to copy.
+**Status:** accepted and implemented, 2026-08-23. The first decision record in this repository; if a
+second one is ever needed, this is the shape to copy. All seven stages of
+[`plan-egui-shell.md`](plan-egui-shell.md) landed, and nothing in *this* record was contradicted by
+building it: no core API changed, no system dependency appeared, and the headless tests work as
+claimed. The plan's file layout was the one thing that moved — the behaviour tests are in
+`src/app.rs` rather than a `tests/behaviour.rs`, because a crate with only a `[[bin]]` target has no
+library for an integration test to link against. The "When to revisit" triggers below are now live
+rather than hypothetical.
 
 **Summary:** add `ui_egui/` — an [egui](https://github.com/emilk/egui)/`eframe` shell that is
 deliberately **not** native to any platform, in exchange for building everywhere with no system
