@@ -8,8 +8,16 @@ together — see [`doc/shared-core-native-shell.md`](doc/shared-core-native-shel
 ## Status
 
 Every shell in the original plan exists: `core/`, `cli/`, `ffi/`, `ui_tui/`, `ui_linux/`,
-`ui_windows/` and `ui_mac/`, plus `ui_web/`, which was planned later. Only the planned `ui_qt/`
-(see below) is outstanding.
+`ui_windows/` and `ui_mac/`, plus `ui_web/`, which was planned later. `ui_qt/` (see below) is still
+outstanding.
+
+`ui_egui/` is **under construction** — a deliberately non-native, portable GUI, decided on in
+[`doc/decision-egui-shell.md`](doc/decision-egui-shell.md) and being built in the stages of
+[`doc/plan-egui-shell.md`](doc/plan-egui-shell.md). Stage 1 has landed: the crate is a workspace
+member, `eframe`/`egui_kittest` are pinned in `[workspace.dependencies]`, and `edit-egui` handles its
+arguments and opens the document. It has **no window, no renderer and no key map yet** — those are
+stages 2 to 4, and the headless `egui_kittest` tests that justify the whole shell are stage 5. Do not
+document it as working until they exist.
 
 **There is no MSRV.** `rust-version` was removed from the workspace manifest, and the pins that
 served it are gone with it: `ratatui` is on 0.30, `instability` and `darling` are unpinned. The
@@ -102,6 +110,7 @@ ui_linux/     ✅ editor-gtk   — the `edit-gtk` binary (GTK4 + libadwaita)
 ui_windows/   ✅ EditorApp    — C# / WinUI 3, consuming generated bindings
 ui_mac/       ✅ EditorApp    — SwiftUI (SwiftPM package), generated Swift bindings
 ui_web/       ✅ editor-web   — wasm32 + wasm-bindgen, rendered into the DOM
+ui_egui/      🚧 editor-egui  — the `edit-egui` binary (eframe), portable, native to nothing
 ui_qt/        ⬜ Qt shell (see "Planned: the Qt shell")
 ```
 

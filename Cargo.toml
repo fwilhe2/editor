@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "cli", "ffi", "ui_tui", "ui_linux", "ui_web"]
+members = ["core", "cli", "ffi", "ui_tui", "ui_linux", "ui_web", "ui_egui"]
 
 [workspace.package]
 version = "0.1.0"
@@ -30,3 +30,23 @@ wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 web-sys = "0.3"
+# The portable shell. egui is reached through `eframe::egui`, never as a direct
+# dependency, so the two versions cannot drift — the same rule as
+# `ratatui::crossterm` and `libadwaita::gtk`.
+#
+# Deliberately not the default features: those select the wgpu backend and a large
+# graphics stack this editor has no use for, while glow runs on software GL, which
+# is what a VM or a remote session actually offers. Turning the defaults off also
+# drops accesskit, which is put back by hand — it is what makes the shell reachable
+# by a screen reader, and what the test harness queries.
+eframe = { version = "0.36", default-features = false, features = [
+  "accesskit",
+  "default_fonts",
+  "glow",
+  "wayland",
+  "x11",
+] }
+# egui, eframe and egui_kittest are released in lockstep and must share a minor
+# version. `eframe::egui` polices two of them; this one is a dev-dependency that
+# nothing re-exports, so it is the version to check by hand when eframe moves.
+egui_kittest = "0.36"

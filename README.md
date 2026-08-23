@@ -66,13 +66,14 @@ Cargo dependency                wasm-bindgen               UniFFI
  edit       CLI                  editor-web           EditorApp (C#)
  edit-tui   terminal             wasm · DOM           WinUI 3 · Windows
  edit-gtk   GTK4 / GNOME                              EditorApp (Swift)
- ui_qt      planned                                   SwiftUI · macOS
+ edit-egui  portable (wip)                            SwiftUI · macOS
+ ui_qt      planned
 ```
 
 Three classes of shell, and the difference matters:
 
-- **Rust shells** — the CLI, TUI and GTK app — depend on `editor-core` as an ordinary Cargo
-  dependency and call its public API directly. No bindings, no translation layer.
+- **Rust shells** — the CLI, TUI, GTK app and the egui one — depend on `editor-core` as an ordinary
+  Cargo dependency and call its public API directly. No bindings, no translation layer.
 - **Foreign shells** — WinUI and SwiftUI — go through `editor-ffi`, a thin UniFFI facade that
   generates C# and Swift bindings. The annotations live in their own crate so the core's Rust API
   stays idiomatic (`impl AsRef<Path>`, `PathBuf`, `char`) instead of being flattened into strings
@@ -103,6 +104,7 @@ Rules the whole design leans on:
 | `ui_windows/` | WinUI 3 app in C#, following Microsoft's Fluent guidance |
 | `ui_mac/` | SwiftUI app, following Apple's HIG, plus a Swift smoke test |
 | `ui_web/` | `editor-web` — WebAssembly app rendered into the DOM, plus a jsdom smoke test |
+| `ui_egui/` | `edit-egui` — portable GUI on egui/eframe, native to nothing. **Work in progress**: the crate exists, the window does not |
 
 ## Building
 
@@ -122,6 +124,19 @@ cargo build --release -p editor-cli -p editor-tui
 ./target/release/edit --help
 ./target/release/edit-tui somefile.txt
 ```
+
+### Every platform — egui
+
+Also pure Rust, and the only GUI with no system dependencies on any platform: Linux, macOS and
+Windows all build it with nothing but a Rust toolchain.
+
+```sh
+cargo build --release -p editor-egui
+```
+
+**It has no window yet.** The crate, its place in the workspace and its version pins have landed;
+the renderer, the key map and the headless tests are stages 2 to 5 of
+[`doc/plan-egui-shell.md`](doc/plan-egui-shell.md).
 
 ### Linux GUI — GTK4 + libadwaita
 
@@ -257,12 +272,23 @@ This is a prototype, and it is honest about being one. Known gaps:
 - Line endings are assumed to be LF.
 - No search, selection, clipboard, multiple documents or syntax highlighting.
 
-One more shell is planned, and it stretches the architecture in a useful direction:
+Two more shells are on the way, and each stretches the architecture in a different direction:
 
-- **Qt** (`ui_qt/`) — a second desktop toolkit, and the KDE/Plasma conventions that come with it.
-  Likely via [`cxx-qt`](https://github.com/KDAB/cxx-qt), which would keep it a plain Rust crate
-  depending on the core directly, like the GTK and terminal shells. See `CLAUDE.md` for the
-  trade-off against a C++ Qt app, which would need a fourth binding mechanism.
+- **egui** (`ui_egui/`) — under construction, and the one shell here that is **deliberately not
+  native**. It looks and behaves the same on every platform, which is exactly the compromise the
+  argument above is against; it is being built anyway, for two things no native shell can offer. It
+  needs no system dependencies anywhere, and its behaviour can be tested headlessly — making it the
+  first GUI in this repository that CI *runs* rather than merely compiles, and the first one an agent
+  can verify without a human looking at a screen. It is also the control group the argument above has
+  been missing: a portable shell, built from the same core in the same style, to compare the native
+  ones against. See [`doc/decision-egui-shell.md`](doc/decision-egui-shell.md) for why that trade is
+  worth making and [`doc/plan-egui-shell.md`](doc/plan-egui-shell.md) for how it is being built.
+- **Qt** (`ui_qt/`) — planned: a second desktop toolkit, and the KDE/Plasma conventions that come
+  with it. Likely via [`cxx-qt`](https://github.com/KDAB/cxx-qt), which would keep it a plain Rust
+  crate depending on the core directly, like the GTK and terminal shells. See `CLAUDE.md` for the
+  trade-off against a C++ Qt app, which would need a fourth binding mechanism. Note that egui does
+  not replace it and the two have opposite purposes: Qt exists to reach a *second* set of native
+  conventions, egui to reach none of them.
 
 The browser shell (`ui_web/`) was the previous entry on that list. It is the honest test of the
 argument above — the web is one more platform with conventions of its own, not an excuse to stop
