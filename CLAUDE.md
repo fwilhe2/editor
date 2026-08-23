@@ -13,13 +13,13 @@ outstanding.
 
 `ui_egui/` is **under construction** — a deliberately non-native, portable GUI, decided on in
 [`doc/decision-egui-shell.md`](doc/decision-egui-shell.md) and being built in the stages of
-[`doc/plan-egui-shell.md`](doc/plan-egui-shell.md). Stages 1 to 3 have landed: the crate is a
-workspace member, `eframe`/`egui_kittest` are pinned in `[workspace.dependencies]`, and `edit-egui`
-opens a window that renders the document from `get_viewport` with a status line and a caret. It has
-**no key map yet** — stage 4 — and the full headless `egui_kittest` suite that justifies the whole
-shell is stage 5. Do not document it as working until that exists.
+[`doc/plan-egui-shell.md`](doc/plan-egui-shell.md). Stages 1 to 5 have landed: `edit-egui` renders
+the document from `get_viewport`, handles keys, clicks and the wheel, and carries 33 tests that drive
+the real shell through `egui_kittest` with no display and no GPU — the first GUI in this repository
+whose behaviour CI can check rather than merely compile. **Stage 6, its own workflow, is
+outstanding**, so nothing runs those tests automatically yet.
 
-Five things about this shell are already load-bearing and easy to undo by accident:
+Six things about this shell are already load-bearing and easy to undo by accident:
 
 - **`egui::Context` is the whole observer bridge.** It is `Clone + Send + Sync`, so `Notifier` holds
   one directly — no channel as in GTK, no `AtomicBool` as in the TUI and browser shells — and
@@ -36,6 +36,12 @@ Five things about this shell are already load-bearing and easy to undo by accide
 - **No `TextEdit` and no `ScrollArea`, ever.** The first owns a `String` and the second a scroll
   position; the core owns both. This is the same rule that keeps the `GtkTextView` read-only and
   keeps `contenteditable` out of `ui_web/`.
+- **`App::frame(&mut Ui)` exists so the tests can drive the whole shell.** `eframe::App::ui` only
+  delegates to it, because an `eframe::Frame` cannot be built outside eframe. Keep the logic in
+  `frame`, or the harness stops seeing what the app really does.
+- **The status line uses labels, not buttons.** This shell reads raw events rather than owning a
+  focused text widget, so a focusable widget there would take Enter and the arrows away from the
+  document.
 
 **There is no MSRV.** `rust-version` was removed from the workspace manifest, and the pins that
 served it are gone with it: `ratatui` is on 0.30, `instability` and `darling` are unpinned. The
@@ -52,7 +58,7 @@ and fast. Add it when the core gains work that must not block a UI thread.
 ## Commands
 
 ```sh
-cargo test --workspace          # 93 tests; needs libgtk-4-dev + libadwaita-1-dev for ui_linux
+cargo test --workspace          # 117 tests; needs libgtk-4-dev + libadwaita-1-dev for ui_linux
 cargo test -p editor-core       # one crate
 cargo test undo                 # single test by name substring
 cargo run -p editor-cli -- --help

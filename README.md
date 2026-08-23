@@ -66,7 +66,7 @@ Cargo dependency                wasm-bindgen               UniFFI
  edit       CLI                  editor-web           EditorApp (C#)
  edit-tui   terminal             wasm · DOM           WinUI 3 · Windows
  edit-gtk   GTK4 / GNOME                              EditorApp (Swift)
- edit-egui  portable (wip)                            SwiftUI · macOS
+ edit-egui  portable                            SwiftUI · macOS
  ui_qt      planned
 ```
 
@@ -104,7 +104,7 @@ Rules the whole design leans on:
 | `ui_windows/` | WinUI 3 app in C#, following Microsoft's Fluent guidance |
 | `ui_mac/` | SwiftUI app, following Apple's HIG, plus a Swift smoke test |
 | `ui_web/` | `editor-web` — WebAssembly app rendered into the DOM, plus a jsdom smoke test |
-| `ui_egui/` | `edit-egui` — portable GUI on egui/eframe, native to nothing. **Work in progress**: renders the document, cannot edit it yet |
+| `ui_egui/` | `edit-egui` — portable GUI on egui/eframe, native to nothing, and the only one with headless behaviour tests |
 
 ## Building
 
@@ -134,9 +134,16 @@ Windows all build it with nothing but a Rust toolchain.
 cargo run --release -p editor-egui -- somefile.txt
 ```
 
-**It shows the document but cannot yet edit it.** The text, caret and status line are rendered from
-the core; no key does anything, because the key map is stage 4 and the full headless test suite is
-stage 5 of [`doc/plan-egui-shell.md`](doc/plan-egui-shell.md).
+It edits: arrows move, typing inserts, Ctrl/⌘+Z and +Y undo and redo, +S saves, +Q quits (twice if
+there are unsaved changes), the wheel scrolls and a click places the caret. **Still missing its own
+CI workflow**, which is stage 6 of [`doc/plan-egui-shell.md`](doc/plan-egui-shell.md).
+
+It is also the one GUI here whose behaviour is *tested* rather than merely compiled — 33 tests that
+drive the real shell, headlessly, with no display and no GPU:
+
+```sh
+cargo test -p editor-egui       # needs no window, and passes without one
+```
 
 ### Linux GUI — GTK4 + libadwaita
 
