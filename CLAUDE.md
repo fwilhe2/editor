@@ -8,14 +8,28 @@ together — see [`doc/shared-core-native-shell.md`](doc/shared-core-native-shel
 ## Status
 
 Every shell in the original plan exists: `core/`, `cli/`, `ffi/`, `ui_tui/`, `ui_linux/`,
-`ui_windows/` and `ui_mac/`, plus `ui_web/` and `ui_egui/`, both planned later. **`ui_qt/` (see
-below) is the only outstanding one.**
+`ui_win32/` and `ui_mac/`, plus `ui_web/` and `ui_egui/`, both planned later. **`ui_qt/` (see below)
+is the only outstanding one.**
 
 `ui_egui/` is complete — all seven stages of [`doc/plan-egui-shell.md`](doc/plan-egui-shell.md) have
 landed, including its workflow and the documentation. Its invariants have their own section below,
 like every other shell's. It cost the core nothing: no new capability, hence no new CLI subcommand,
 which is what the parity rule predicts for a shell that adds a toolkit rather than a platform
 capability.
+
+**`ui_windows/` no longer exists.** The WinUI 3 application in C# was replaced by `ui_win32/`, a
+Rust-direct shell drawing a plain Win32 window with GDI, in
+[`doc/decision-win32-shell.md`](doc/decision-win32-shell.md). `ffi/csharp-smoke/` went with it, and
+so did the `uniffi-bindgen-cs` pin. Two things follow that matter more than the shell itself:
+
+- **`ffi/` is now exercised by one language, not two.** Swift is the only foreign binding left. The
+  facade crate stays exactly as it was, and `FfiSmoke` still checks the boundary on Linux — but the
+  architecture's "bindings into any language" claim has half the evidence it did. This is the
+  decision's stated price, not an oversight.
+- **The Windows shell can now be type-checked from Linux**, which no native shell here could before:
+  `rustup target add x86_64-pc-windows-msvc` and `cargo check -p editor-win32 --target
+  x86_64-pc-windows-msvc`. `cargo check` never links, so no MSVC is needed. Use it before pushing
+  anything that touches `ui_win32/`.
 
 **There is no MSRV.** `rust-version` was removed from the workspace manifest, and the pins that
 served it are gone with it: `ratatui` is on 0.30, `instability` and `darling` are unpinned. The
@@ -32,7 +46,7 @@ and fast. Add it when the core gains work that must not block a UI thread.
 ## Commands
 
 ```sh
-cargo test --workspace          # 117 tests; needs libgtk-4-dev + libadwaita-1-dev for ui_linux
+cargo test --workspace          # 140 tests; needs libgtk-4-dev + libadwaita-1-dev for ui_linux
 cargo test -p editor-core       # one crate
 cargo test undo                 # single test by name substring
 cargo run -p editor-cli -- --help
@@ -41,6 +55,22 @@ cargo run -p editor-gtk -- FILE
 cargo run -p editor-egui -- FILE    # no system dependencies, any platform
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+
+# The Windows shell, checked without Windows. `cargo check` does not link, so this
+# needs no MSVC — only the target's standard library. Run it before pushing any
+# change to ui_win32/; the alternative is finding out from the Windows runner.
+rustup target add x86_64-pc-windows-msvc
+cargo check -p editor-win32 --target x86_64-pc-windows-msvc
+cargo clippy -p editor-win32 --target x86_64-pc-windows-msvc --all-targets -- -D warnings
+
+# And it can actually be run here. cargo-xwin links the real MSVC binary on Linux
+# (clang + lld + Microsoft's SDK), Wine runs it, Xvfb gives it a display, and
+# ImageMagick photographs it. Installed on this machine already.
+cargo xwin build -p editor-win32 --release --target x86_64-pc-windows-msvc
+Xvfb :99 -screen 0 1200x800x24 &
+export DISPLAY=:99 WINEDLLOVERRIDES="mscoree,mshtml=" WINEDEBUG=-all
+wine target/x86_64-pc-windows-msvc/release/edit-win32.exe FILE &
+import -window root /tmp/shot.png
 
 ./ui_web/build.sh release     # wasm module + JS glue + static files -> ui_web/dist
 ./ui_web/smoke.sh release     # drive the built module in jsdom, no browser needed
@@ -87,12 +117,13 @@ All editor logic, state, and I/O live in one pure-Rust crate (`core/`). Every UI
 renderer and event forwarder — it holds no editor state of its own. Three classes of shell consume
 the core differently, and this split is the main thing to keep straight:
 
-- **Rust shells** (`cli/`, `ui_tui/`, `ui_linux/`, and `ui_qt/` if it uses `cxx-qt`) depend on
-  `core` as an ordinary Cargo dependency and call its public API directly. No FFI, no bindings, no
-  translation layer.
-- **Foreign shells** (`ui_windows/` and `ui_mac/`) reach the core through UniFFI-generated bindings
-  produced from the **`ffi/` crate**, not from `core` directly. Windows builds `editor_ffi.dll` and
-  consumes generated C#; macOS builds a static library and consumes generated Swift.
+- **Rust shells** (`cli/`, `ui_tui/`, `ui_linux/`, `ui_win32/`, and `ui_qt/` if it uses `cxx-qt`)
+  depend on `core` as an ordinary Cargo dependency and call its public API directly. No FFI, no
+  bindings, no translation layer.
+- **Foreign shells** — `ui_mac/`, and only `ui_mac/` since the C# shell was replaced — reach the core
+  through UniFFI-generated bindings produced from the **`ffi/` crate**, not from `core` directly.
+  macOS builds a static library and consumes generated Swift. The facade is still written to serve
+  more than one language; it just has one caller now.
 - **The browser shell** (`ui_web/`) is both at once: Rust depending on `core` directly, compiled to
   `wasm32-unknown-unknown`, reaching its platform through **`wasm-bindgen`**. UniFFI has no
   JavaScript target, and would be pointless when the shell is Rust anyway — so `ffi/` is not
@@ -103,10 +134,10 @@ Layout (Cargo workspace at the root; ✅ exists, ⬜ planned):
 ```
 core/         ✅ editor-core  — Rust logic, state, undo history
 cli/          ✅ editor-cli   — the `edit` binary
-ffi/          ✅ editor-ffi   — UniFFI facade + a C# smoke test of the boundary
+ffi/          ✅ editor-ffi   — UniFFI facade for the Swift shell
 ui_tui/       ✅ editor-tui   — the `edit-tui` binary (ratatui)
 ui_linux/     ✅ editor-gtk   — the `edit-gtk` binary (GTK4 + libadwaita)
-ui_windows/   ✅ EditorApp    — C# / WinUI 3, consuming generated bindings
+ui_win32/     ✅ editor-win32 — the `edit-win32` binary (Win32 + GDI), no runtime deps
 ui_mac/       ✅ EditorApp    — SwiftUI (SwiftPM package), generated Swift bindings
 ui_web/       ✅ editor-web   — wasm32 + wasm-bindgen, rendered into the DOM
 ui_egui/      ✅ editor-egui  — the `edit-egui` binary (eframe), portable, native to nothing
@@ -218,8 +249,11 @@ that looks the same on all three is the wrong outcome.
   GNOME keyboard conventions, adaptive layout.
 - **macOS (`ui_mac/`)** — Apple Human Interface Guidelines: the standard menu bar, macOS keyboard
   shortcuts (⌘S, ⌘Q), native window/toolbar behavior.
-- **Windows (`ui_windows/`)** — Microsoft's WinUI 3 / Fluent design docs: Fluent controls, Mica
-  backdrop, Windows keyboard conventions.
+- **Windows (`ui_win32/`)** — Windows' *conventions* without Windows' *controls*: the shell font
+  from `SPI_GETNONCLIENTMETRICS`, the user's `SPI_GETWHEELSCROLLLINES`, the system caret, Ctrl+Y for
+  redo, a Save/Don’t Save/Cancel dialog on close, a dark title bar via
+  `DWMWA_USE_IMMERSIVE_DARK_MODE`, per-monitor DPI v2. There are no Fluent controls and no Mica —
+  see the decision record for why that trade was taken.
 - **The browser (`ui_web/`)** — the web's own conventions, which are as real as any desktop's:
   system font stack, `prefers-color-scheme` rather than a chosen theme, visible focus rings,
   Ctrl-*and*-⌘ shortcuts, files through the File API and a download, `beforeunload` in place of a
@@ -232,10 +266,24 @@ another.
 
 Every shell gets its own GitHub Actions workflow that builds it: `core-cli.yml` (three OS runners
 plus one workspace-wide fmt/clippy job), `tui.yml` and `egui.yml` (three OS runners each, no system
-packages), `linux.yml` (Ubuntu only), `windows.yml` and `macos.yml` (Windows/macOS only — Rust
-library, then bindings, then the FFI smoke test, then the app; the smoke test running before the UI
-build is what separates a binding failure from a XAML/SwiftUI one), and `web.yml` (Ubuntu only,
-because the browser is not an operating system: wasm is the same artifact everywhere).
+packages), `linux.yml` (Ubuntu only), `macos.yml` (macOS only — Rust library, then bindings, then
+the FFI smoke test, then the app; the smoke test running before the UI build is what separates a
+binding failure from a SwiftUI one), `win32.yml` (see below), and `web.yml` (Ubuntu only, because
+the browser is not an operating system: wasm is the same artifact everywhere).
+
+The Win32 shell can also be **run** on Linux — `cargo-xwin` links the genuine MSVC binary and Wine
+executes it under Xvfb; the recipe is in Commands above and in the decision record. Treat it exactly
+as `cargo check --target` is treated: an inspection aid, never a build path, and **never in CI**. A
+green Wine run says nothing about Windows' compositor, its DWM attributes or its fonts, and adding
+it to a workflow would turn a debugging convenience into a release path. Rule 9 is unchanged.
+
+`win32.yml` has **two** jobs, and the second is the unusual one. `build` is an ordinary
+`windows-latest` job — test, clippy, build, then read the executable's import table back and fail if
+anything outside Windows appears, which is what keeps the shell's central claim honest.
+`check-from-linux` runs `cargo check -p editor-win32 --target x86_64-pc-windows-msvc` on Ubuntu:
+`cargo check` never links, so it needs no MSVC, and it catches a windows-rs API break in about a
+minute on the cheapest runner. **That is not cross-compilation and must not become it** — the
+`.exe` still comes off the Windows runner. No native shell here could be inspected this way before.
 
 `egui.yml` is the only one whose test step checks a GUI's *behaviour* rather than compiling it, and
 it deliberately sets up no display — a run that needed one would mean the harness had stopped being
@@ -310,7 +358,7 @@ never as a direct dependency, so the versions cannot drift.
 `keymap.rs` is deliberately widget-free — key/modifier in, `UiAction` out — which is why it can be
 unit-tested with no display, and it is the pattern the Qt shell should copy.
 
-## The FFI layer (`ffi/`) and the Windows shell (`ui_windows/`)
+## The FFI layer (`ffi/`)
 
 **The UniFFI annotations live in `ffi/`, not in `core/`** — a deliberate departure from the original
 spec. `Editor` takes `impl AsRef<Path>` and returns `PathBuf`, `char` and `Option<PathBuf>`, none of
@@ -319,42 +367,99 @@ non-generic signatures for the benefit of foreign callers. `EditorHandle` in `ff
 — every method forwards to exactly one core call, so there is nowhere for behaviour to drift — and
 the Rust shells never compile UniFFI at all.
 
-Versions are coupled and must be bumped together: **`uniffi` in `Cargo.toml` and the
-`uniffi-bindgen-cs` tag in `.github/workflows/windows.yml`** (currently 0.31 / `v0.11.0+v0.31.0`).
-The generator lags upstream uniffi, so uniffi's latest release is usually *not* the one to use.
-Swift has no such problem — its generator is built from `ffi/` itself.
+**`ui_mac/` is now its only consumer.** The C# shell that used to be the other one was replaced by
+`ui_win32/`, which depends on `core` directly; see
+[`doc/decision-win32-shell.md`](doc/decision-win32-shell.md). Two consequences:
 
-Regenerating bindings by hand:
+- **The `uniffi` ↔ `uniffi-bindgen-cs` version coupling is gone**, and with it the worst pin in the
+  repository — a hand-matched tag on a third-party generator that lagged upstream uniffi. `uniffi`
+  in `Cargo.toml` can now be bumped on its own. Swift's generator is built from `ffi/` itself and
+  has always been on the right version by construction.
+- **Keep the facade language-neutral anyway.** It is written to serve any UniFFI target and the
+  point of it is that a second language could be added without touching `core`. Do not let
+  Swift-shaped assumptions leak into it just because Swift is the only caller today.
 
-```sh
-cargo build --release -p editor-ffi
-cargo install uniffi-bindgen-cs --git https://github.com/NordSecurity/uniffi-bindgen-cs \
-  --tag v0.11.0+v0.31.0
-uniffi-bindgen-cs --library target/release/libeditor_ffi.so --out-dir ui_windows/Generated
-```
+`ffi/csharp-smoke/` is gone with the C# shell. `FfiSmoke` in `ui_mac/` is the surviving boundary
+check, it covers the same 13 assertions, and it still runs on Linux — so the FFI boundary remains
+verifiable on this machine, by one harness instead of two.
 
-- **The generated types are `internal`.** They must be compiled *into* the consuming assembly; a
-  project reference will not see them. Both `ui_windows/` and `ffi/csharp-smoke/` include the
-  generated `.cs` as a source file, and `ui_windows/Generated/` is gitignored.
-- **`ffi/csharp-smoke/` is where the boundary is actually tested.** It is a console app, so it runs
-  on Linux against `libeditor_ffi.so` exactly as it runs on Windows against `editor_ffi.dll` — which
-  makes the FFI layer verifiable without a Windows machine. If it passes and the WinUI app
-  misbehaves, the bug is in XAML, not the bindings. Run it locally with
-  `LD_LIBRARY_PATH=target/release dotnet run --project ffi/csharp-smoke`.
 - **Positions stay 0-based across the boundary.** Each shell adds one for display.
-- The WinUI `TextBox` is read-only and rendered from `Viewport`, for the same reason the GTK
-  `TextView` is: letting the control edit itself would create a second source of truth. `KeyDown`
-  handles navigation and editing keys, `CharacterReceived` handles text (skipped while Ctrl is
-  down, or Ctrl+S would type a control character), and shortcuts are `KeyboardAccelerator`s.
-- The app is **unpackaged** (`WindowsPackageType=None`) so CI can build it without signing
-  certificates. `editor_ffi.dll` is copied next to the executable by the csproj.
-- Known gap: no mouse-wheel scrolling — the viewport moves only via `follow_cursor`.
+- `ffi/` still builds both `cdylib` and `staticlib`: the macOS app links the static library so the
+  bundle has nothing to find at runtime, and `ui_mac/generate-bindings.sh` reads the `.so` on Linux.
+
+## The Win32 shell (`ui_win32/`, binary `edit-win32`)
+
+A plain Win32 window drawn with GDI through Microsoft's `windows` crate — Rust-direct, like the CLI,
+TUI, GTK and egui shells. It replaced a WinUI 3 application in C#; the reasoning, the options
+weighed and the costs accepted are in
+[`doc/decision-win32-shell.md`](doc/decision-win32-shell.md).
+
+**The point of it is one sentence: the `.exe` depends on nothing Windows does not ship.** No .NET
+runtime, no Windows App SDK, no Visual C++ redistributable. Everything below serves that or follows
+from it.
+
+- **`.cargo/config.toml` links the MSVC CRT statically** (`-C target-feature=+crt-static`) for both
+  Windows targets. Without it the binary needs `vcruntime140.dll`, which is *not* part of Windows —
+  `ucrtbase.dll` is, and that is the distinction that makes this load-bearing rather than a
+  preference. `win32.yml` reads the import table out of the built executable and fails on anything
+  outside the OS, so the claim is checked on every push.
+- **`keymap.rs` and `layout.rs` contain no Windows types at all** — a virtual-key code is a `u16`,
+  a modifier is a `bool`, a pixel is an `i32`. That is what lets `cargo test -p editor-win32` run
+  their 23 assertions on Linux. The `windows` dependency is declared under
+  `[target.'cfg(windows)'.dependencies]`, and `main.rs` carries `#[cfg_attr(not(windows),
+  allow(dead_code))]` on both modules so the host build stays clippy-clean.
+- **The VK constants are copied from `winuser.h`, and a `#[cfg(windows)]` test pins every one of
+  them against the real `windows` crate values.** Copying a wrong number is the obvious failure mode
+  of doing it that way, so it is the first thing the Windows job checks.
+- **No `EDIT` or rich-edit control, ever.** They own their own text buffer. Same rule that keeps the
+  `GtkTextView` read-only and `contenteditable` out of `ui_web/`; being easier is not an argument.
+- **`follow_cursor` is called from `on_action` and nowhere else.** `paint` renders from the core's
+  stored `scroll_offset`. If painting followed the cursor, a wheel scroll away from the caret would
+  snap back on the next `WM_PAINT` — the rule `refresh()` enforces in GTK and `render` in `ui_web/`.
+- **The observer posts, it does not draw.** `HWND` is a raw pointer and so not `Send`, while
+  `EditorObserver` must be `Send + Sync`, so `Notifier` carries the handle as an `isize` and uses
+  only `PostMessageW`, which Microsoft documents as callable from any thread. An `AtomicBool`
+  coalesces a burst into one paint, the same job the `async_channel` drain does in GTK.
+- **Painting goes through a memory DC and one `BitBlt`,** and `WM_ERASEBKGND` returns 1. Painting
+  text straight onto the window flickers visibly on every keystroke.
+- **`ExtTextOutW` is given an explicit advance per glyph.** The caret arithmetic assumes one cell per
+  character; the advance array forces the font to agree rather than hoping it does. Tabs are drawn
+  as a single space for the same reason — the document keeps its tab.
+- **The caret is a real `CreateCaret` caret**, not a painted rectangle: it brings the user's blink
+  rate and width settings, and it is the only thing this window reports to assistive technology and
+  to IMEs. `BeginPaint` hides it automatically, so nothing has to do that by hand.
+- **Fonts and metrics are rebuilt on every `WM_DPICHANGED`**, and the DPI is read with
+  `GetDpiForWindow` at `WM_CREATE` rather than assumed to be 96 — otherwise the window starts blurry
+  on every scaled display. Per-monitor-v2 awareness is set by `SetProcessDpiAwarenessContext` in
+  code, so the binary needs no manifest and therefore no build script.
+- **`#![windows_subsystem = "windows"]`** makes it a GUI application, so there is no console flash
+  from Explorer — and no stderr, which is why argument errors go into a `MessageBoxW`. **Never run
+  this binary in CI**: a message box on a headless runner waits forever.
+- **There is a menu bar, and it is the only pointer route to Save/Undo/Redo.** File (Save, Exit) and
+  Edit (Undo, Redo), from `CreateMenu`/`AppendMenuW`, greyed at `WM_INITMENUPOPUP` from
+  `is_dirty`/`can_undo`/`can_redo` — the same job the WinUI shell did by binding `IsEnabled`. Every
+  item dispatches the same [`keymap::UiAction`] a keystroke produces, so there is one code path and
+  the two cannot drift; Exit posts `WM_CLOSE` rather than closing, so it gets the same unsaved-changes
+  dialog. The accelerator text after each tab is a *label* — the keys themselves live in `keymap.rs`,
+  which is what keeps them testable.
+- **Nothing may hold a `&mut App` across a modal dialog.** `MessageBoxW` runs its own message loop,
+  so the window is repainted while the dialog is up and the window procedure is *re-entered* — and a
+  second `app_from` there would alias the first `&mut`. `on_close` is a free function, handled
+  before `app_from` in the dispatch, that borrows twice for as long as it takes to read a question
+  and act on an answer. Any future modal — a file picker, a find bar — must copy that shape. This
+  was a real bug, found by running the shell under Wine rather than by reading it.
+- Known gaps, all deliberate: no Fluent controls, no Mica (a backdrop only shows through pixels the
+  app does not paint, and this one paints them all), no accessibility beyond the caret, no
+  scrollbar, no toolbar, no file dialog, no selection, no clipboard, no IME composition, no
+  horizontal scrolling, and no Home/End/PageUp/PageDown/Delete — the core has no operation for any of those and
+  inventing one in a shell is what the parity rule forbids.
 
 ## The macOS shell (`ui_mac/`)
 
 SwiftUI over the same `ffi/` crate. **Swift bindings come from uniffi itself**, via a
 `uniffi-bindgen` binary inside `ffi/`, so the generator is always on the same uniffi version as the
-runtime — unlike C#, whose external generator must be matched by hand.
+runtime. It is now the only generator here; the C# one, whose external binary had to be matched by
+hand, went with the WinUI shell.
 
 ```sh
 cargo build --release -p editor-ffi
@@ -373,8 +478,9 @@ swift build --package-path ui_mac --product FfiSmoke -Xlinker "$PWD/target/relea
   is what lets `FfiSmoke` run without a Mac. `generate-bindings.sh` deliberately does not copy it.
 - **The app links `libeditor_ffi.a`, not the dylib**, so the bundle has no library to find at
   runtime. That is why `ffi/` builds `staticlib` as well as `cdylib`.
-- **`FfiSmoke` mirrors `ffi/csharp-smoke`** and is the same 13 checks. Both run on Linux, so both
-  FFI boundaries are verifiable here; what is *not* verifiable locally is SwiftUI and XAML.
+- **`FfiSmoke` is the FFI boundary's only smoke test now** — the 13 checks it used to share with
+  `ffi/csharp-smoke`. It runs on Linux, so the boundary is still verifiable here; what is *not*
+  verifiable locally is SwiftUI itself.
 - Named constructors become static methods, not initialisers: `EditorHandle.open(path:)`, not
   `EditorHandle(path:)`. Only a constructor called `new` maps to `init`.
 - Keys go through `.onKeyPress` (macOS 14+); ⌘-shortcuts are returned as `.ignored` so the menu bar
@@ -387,7 +493,7 @@ swift build --package-path ui_mac --product FfiSmoke -Xlinker "$PWD/target/relea
 Rust compiled to `wasm32-unknown-unknown`, depending on `core` directly and reaching the page
 through **`wasm-bindgen`, not UniFFI** — which has no JavaScript target and would be the wrong tool
 regardless, since the shell is Rust. That makes it a third class of shell: Rust-direct like the TUI,
-foreign-bound like WinUI, both at once.
+foreign-bound like the Swift app, both at once.
 
 Building is two steps, because rustc only produces half of what a page needs. `ui_web/build.sh`
 compiles the `.wasm`, runs the `wasm-bindgen` CLI over it to write the JS glue, and copies
@@ -399,7 +505,7 @@ pinned by hand.
 
 - **The DOM is a renderer, not the document.** There is no `contenteditable` anywhere; `#text` is
   rebuilt from `get_viewport` every repaint and the caret is a positioned `<div>`. Exactly the GTK
-  `TextView` and WinUI `TextBox` rule — if the browser is allowed to edit the text, it wins, and the
+  `TextView` and Win32 `EDIT` rule — if the browser is allowed to edit the text, it wins, and the
   core is no longer the source of truth.
 - **The browser is the first platform here with no filesystem**, which is why `Editor::load_text`
   and `Editor::save_to_string` exist. A file arrives from the File API as a string and leaves as a
@@ -420,8 +526,7 @@ pinned by hand.
   characters and its height one line. Re-measured every frame, because page zoom and a late font
   change both and neither fires an event. `Metrics::new` floors both at a non-zero value, or the
   first paint (before layout, when every rectangle is 0) would divide by zero.
-- **`ui_web/smoke.js` is where the boundary is actually tested**, the sibling of `ffi/csharp-smoke`
-  and `FfiSmoke`. `smoke.sh` regenerates the glue for the *node* target and drives the real module
+- **`ui_web/smoke.js` is where the boundary is actually tested**, the sibling of `FfiSmoke`. `smoke.sh` regenerates the glue for the *node* target and drives the real module
   against the real `index.html` in jsdom: typing, arrows, undo/redo, Enter, the wheel, the status
   bar, a resize. jsdom has no layout engine, so every rectangle is zero and the viewport is one line
   tall — which is enough to prove the wiring, and means a failure after it passes is CSS.

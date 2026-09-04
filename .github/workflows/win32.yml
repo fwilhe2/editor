@@ -1,0 +1,106 @@
+name: ui_win32
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Windows only, because a Win32 window needs Windows. Nothing is cross-compiled
+  # here — but note the `check` job below, which does something no other native
+  # shell in this repository can: type-check the real Windows source on Linux.
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # Runs the whole key table plus the assertion that the virtual-key codes
+      # copied out of winuser.h are the real ones — the one test in this crate that
+      # genuinely needs Windows to mean anything.
+      - name: Test
+        run: cargo test -p editor-win32
+
+      - name: Clippy
+        run: cargo clippy -p editor-win32 --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build --release -p editor-win32
+
+      # The point of this shell, made checkable.
+      #
+      # `doc/decision-win32-shell.md` claims the executable needs nothing Windows
+      # does not ship. A dependency on the Visual C++ redistributable would be the
+      # silent way to lose that: it links fine on a developer machine and on this
+      # runner, and fails on a clean install with a missing-DLL dialog. So the
+      # import table is read back and checked rather than trusted.
+      #
+      # The binary is never *run* here. It is a GUI subsystem application whose
+      # argument errors go into a message box, and a message box on a headless
+      # runner waits forever.
+      - name: Check the executable depends on nothing but Windows
+        shell: pwsh
+        run: |
+          $exe = "target/release/edit-win32.exe"
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+          $dlls = [regex]::Matches($ascii, '[A-Za-z0-9_\-]+\.[Dd][Ll][Ll]') |
+            ForEach-Object { $_.Value.ToLower() } | Sort-Object -Unique
+          Write-Host "DLL names in $exe :"
+          $dlls | ForEach-Object { Write-Host "  $_" }
+
+          # Everything here is an install, not part of Windows: the VC++
+          # redistributable, the dynamically linked Universal CRT, the .NET
+          # runtime, and the Windows App SDK the WinUI shell needed.
+          $forbidden = @(
+            'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll',
+            'ucrtbase.dll', 'mscoree.dll', 'hostfxr.dll', 'hostpolicy.dll'
+          )
+          $bad = $dlls | Where-Object { $forbidden -contains $_ -or $_ -like 'api-ms-win-crt-*' `
+            -or $_ -like 'microsoft.windowsappruntime*' -or $_ -like 'microsoft.ui.xaml*' }
+          if ($bad) {
+            Write-Error "the executable depends on components Windows does not ship: $($bad -join ', ')"
+            exit 1
+          }
+          Write-Host "OK - no runtime dependency outside Windows itself."
+
+      - name: Upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: edit-win32-x64
+          path: target/release/edit-win32.exe
+          if-no-files-found: error
+
+  # The new thing this shell makes possible, and the reason it is worth a job of
+  # its own: `cargo check` needs no linker, so the Windows-only source can be
+  # type-checked on the cheapest runner there is. It catches a windows-rs API
+  # change in about a minute instead of waiting on the Windows runner, and it is
+  # the same check a contributor can run on a Linux laptop:
+  #
+  #     rustup target add x86_64-pc-windows-msvc
+  #     cargo check -p editor-win32 --target x86_64-pc-windows-msvc
+  #
+  # `ui_windows/` could not be examined this way at all.
+  check-from-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Type-check the Windows source without Windows
+        run: cargo check -p editor-win32 --target x86_64-pc-windows-msvc
+
+      # The portable half of the shell, tested where every other crate is tested.
+      - name: Test the windowless modules
+        run: cargo test -p editor-win32

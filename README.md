@@ -1,13 +1,12 @@
 # editor
 
 A prototype of the **Shared Core, Native Shell** architecture: one Rust library holds all the
-editing logic, and seven front-ends render it — a CLI, a terminal UI, a GTK4/GNOME app, a WinUI 3
-app, a SwiftUI app, a browser app compiled to WebAssembly, and a portable GUI that is native to
-nothing.
+editing logic, and seven front-ends render it — a CLI, a terminal UI, a GTK4/GNOME app, a Win32 app,
+a SwiftUI app, a browser app compiled to WebAssembly, and a portable GUI that is native to nothing.
 
 It is a text editor only incidentally. The feature set is deliberately tiny — insert, backspace,
 cursor movement, undo/redo, save — because the point is not the editor. The point is that one core
-drives seven very different UIs across three operating systems and the web, two of them across an
+drives seven very different UIs across three operating systems and the web, one of them across an
 FFI boundary, without any of them owning a byte of document state.
 
 **This is a work in progress.** The argument below is the reason it exists.
@@ -15,7 +14,7 @@ FFI boundary, without any of them owning a byte of document state.
 [![core + cli + ffi](https://github.com/fwilhe2/editor/actions/workflows/core-cli.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/core-cli.yml)
 [![ui_tui](https://github.com/fwilhe2/editor/actions/workflows/tui.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/tui.yml)
 [![ui_linux](https://github.com/fwilhe2/editor/actions/workflows/linux.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/linux.yml)
-[![ui_windows](https://github.com/fwilhe2/editor/actions/workflows/windows.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/windows.yml)
+[![ui_win32](https://github.com/fwilhe2/editor/actions/workflows/win32.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/win32.yml)
 [![ui_mac](https://github.com/fwilhe2/editor/actions/workflows/macos.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/macos.yml)
 [![ui_web](https://github.com/fwilhe2/editor/actions/workflows/web.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/web.yml)
 [![ui_egui](https://github.com/fwilhe2/editor/actions/workflows/egui.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/egui.yml)
@@ -65,21 +64,22 @@ are the deliverable.
 Cargo dependency                wasm-bindgen               UniFFI
  (no FFI at all)          (a Cargo dependency too)      (editor-ffi)
         │                             │                       │
- edit       CLI                  editor-web           EditorApp (C#)
- edit-tui   terminal             wasm · DOM           WinUI 3 · Windows
- edit-gtk   GTK4 / GNOME                              EditorApp (Swift)
- edit-egui  portable                                  SwiftUI · macOS
+ edit       CLI                  editor-web           EditorApp (Swift)
+ edit-tui   terminal             wasm · DOM           SwiftUI · macOS
+ edit-gtk   GTK4 / GNOME
+ edit-win32 Win32 · Windows
+ edit-egui  portable
  ui_qt      planned
 ```
 
 Three classes of shell, and the difference matters:
 
-- **Rust shells** — the CLI, TUI, GTK app and the egui one — depend on `editor-core` as an ordinary
-  Cargo dependency and call its public API directly. No bindings, no translation layer.
-- **Foreign shells** — WinUI and SwiftUI — go through `editor-ffi`, a thin UniFFI facade that
-  generates C# and Swift bindings. The annotations live in their own crate so the core's Rust API
-  stays idiomatic (`impl AsRef<Path>`, `PathBuf`, `char`) instead of being flattened into strings
-  for the benefit of foreign callers.
+- **Rust shells** — the CLI, TUI, GTK app, Win32 app and the egui one — depend on `editor-core` as
+  an ordinary Cargo dependency and call its public API directly. No bindings, no translation layer.
+- **Foreign shells** — SwiftUI, and since the C# app was replaced only SwiftUI — go through
+  `editor-ffi`, a thin UniFFI facade that generates Swift bindings. The annotations live in their
+  own crate so the core's Rust API stays idiomatic (`impl AsRef<Path>`, `PathBuf`, `char`) instead
+  of being flattened into strings for the benefit of foreign callers.
 - **The browser shell** — Rust again, compiled to `wasm32-unknown-unknown` and bound to the page
   with `wasm-bindgen`. UniFFI has no JavaScript target, and would be beside the point when the shell
   is Rust: `editor-ffi` is not involved at all.
@@ -89,8 +89,9 @@ Rules the whole design leans on:
 - The text is a **rope**, and `get_viewport(start, end)` is the **only** way a shell reads it. No UI
   ever holds the whole document.
 - **Undo/redo lives in the core** as a command pattern, so every shell gets identical history.
-- The core **pushes** changes out through an observer trait; shells never poll. In Swift and C# this
-  is a UniFFI foreign trait implemented in the shell's own language.
+- The core **pushes** changes out through an observer trait; shells never poll. In Swift it is a
+  UniFFI foreign trait; in the Win32 shell it is a posted window message; in the browser, a flag and
+  a `requestAnimationFrame`.
 - **Feature parity is a hard rule**: anything reachable from any GUI must also be reachable from the
   CLI. A UI-only feature is a bug.
 
@@ -100,10 +101,10 @@ Rules the whole design leans on:
 |------|-----------|
 | `core/` | `editor-core` — the logic. Rope, cursor, viewport, undo history |
 | `cli/` | `edit` — scriptable front-end, and the thing that keeps parity honest |
-| `ffi/` | `editor-ffi` — UniFFI facade, plus a C# smoke test of the boundary |
+| `ffi/` | `editor-ffi` — UniFFI facade for the Swift shell |
 | `ui_tui/` | `edit-tui` — terminal UI (ratatui + crossterm) |
 | `ui_linux/` | `edit-gtk` — GTK4 + libadwaita, following the GNOME HIG |
-| `ui_windows/` | WinUI 3 app in C#, following Microsoft's Fluent guidance |
+| `ui_win32/` | `edit-win32` — Win32 + GDI, depending on nothing Windows does not ship |
 | `ui_mac/` | SwiftUI app, following Apple's HIG, plus a Swift smoke test |
 | `ui_web/` | `editor-web` — WebAssembly app rendered into the DOM, plus a jsdom smoke test |
 | `ui_egui/` | `edit-egui` — portable GUI on egui/eframe, native to nothing, and the only one with headless behaviour tests |
@@ -158,25 +159,28 @@ sudo apt install libgtk-4-dev libadwaita-1-dev     # Debian/Ubuntu
 cargo run --release -p editor-gtk -- somefile.txt
 ```
 
-### Windows — WinUI 3
+### Windows — Win32
 
-Needs the .NET 8 SDK and the Windows App SDK (the "Windows application development" workload in
-Visual Studio installs both). The C# bindings are generated, not committed, so generate them first:
+Needs rustup with the MSVC toolchain, and Visual Studio Build Tools for the linker. That is the
+whole list — no .NET, no Windows App SDK, no bindings to generate:
 
 ```powershell
-cargo build --release -p editor-ffi
-
-cargo install uniffi-bindgen-cs `
-  --git https://github.com/NordSecurity/uniffi-bindgen-cs --tag v0.11.0+v0.31.0
-uniffi-bindgen-cs --library target/release/editor_ffi.dll --out-dir ui_windows/Generated
-
-dotnet build ui_windows/EditorApp.csproj -c Release -p:Platform=x64
+cargo build --release -p editor-win32
+target\release\edit-win32.exe somefile.txt
 ```
 
-The app is unpackaged (no MSIX), and `editor_ffi.dll` is copied next to the executable by the build.
+The resulting executable **depends on nothing Windows does not already ship**. It links `user32`,
+`gdi32`, `dwmapi` and `advapi32`, and `.cargo/config.toml` links the MSVC C runtime statically so
+there is no Visual C++ redistributable to install either. CI reads the import table back and fails
+if anything else appears.
 
-> The `uniffi-bindgen-cs` tag and the `uniffi` version in `Cargo.toml` are a matched pair. The
-> generator lags upstream uniffi, so uniffi's newest release is usually *not* the one to use.
+This shell used to be a WinUI 3 application in C#; [`doc/decision-win32-shell.md`](doc/decision-win32-shell.md)
+records why it was replaced and what that cost — chiefly the project's only C# binding.
+
+> Its Windows-only source can be **type-checked without Windows**, because `cargo check` never
+> links. On any machine: `rustup target add x86_64-pc-windows-msvc && cargo check -p editor-win32
+> --target x86_64-pc-windows-msvc`. This is a checking convenience, not cross-compilation — the
+> `.exe` is still built on Windows.
 
 ### macOS — SwiftUI
 
@@ -208,9 +212,10 @@ cargo install wasm-bindgen-cli --version "$(grep -A1 '^name = "wasm-bindgen"$' C
 python3 -m http.server --directory ui_web/dist 8000
 ```
 
-> The CLI's version must equal the `wasm-bindgen` crate's, or the glue will not match the module —
-> the same coupling as `uniffi` and `uniffi-bindgen-cs`, except `build.sh` reads the version out of
-> `Cargo.lock` and refuses to run on a mismatch, so there is nothing to pin by hand.
+> The CLI's version must equal the `wasm-bindgen` crate's, or the glue will not match the module.
+> Unlike the `uniffi-bindgen-cs` pin this replaced — deleted along with the C# shell — `build.sh`
+> reads the version out of `Cargo.lock` and refuses to run on a mismatch, so there is nothing to
+> pin by hand.
 
 Serve it; do not open `ui_web/dist/index.html` from disk, because browsers refuse to load ES modules
 and `.wasm` over `file://`. There is no server component — the output is four static files.
@@ -257,9 +262,6 @@ deliberately UI-free, so they run on any OS — including the one that cannot bu
 belong to:
 
 ```sh
-# C#
-LD_LIBRARY_PATH=target/release dotnet run --project ffi/csharp-smoke
-
 # Swift
 swift build --package-path ui_mac --product FfiSmoke \
   -Xlinker "$PWD/target/release/libeditor_ffi.a"
@@ -269,8 +271,9 @@ swift build --package-path ui_mac --product FfiSmoke \
 ./ui_web/smoke.sh release
 ```
 
-All three run before their app build in CI, so a failure tells you immediately whether the bug is in
-the bindings or in the UI code.
+Both run before their app build in CI, so a failure tells you immediately whether the bug is in the
+bindings or in the UI code. The Win32 shell needs no such harness: it has no boundary, and its
+windowless modules are tested directly with `cargo test -p editor-win32` on any host.
 
 The egui shell goes further: its tests drive the real app, not a boundary beside it. They run the
 whole egui pass — the same layout and text shaping the window uses — feed it synthetic keys, clicks
@@ -287,8 +290,10 @@ same caveat jsdom carries, and it points the same way: after a change to how a U
 
 This is a prototype, and it is honest about being one. Known gaps:
 
-- No horizontal scrolling in the TUI; no mouse-wheel scrolling in the WinUI and SwiftUI shells (the
-  browser and egui ones do have it).
+- No horizontal scrolling in the TUI; no mouse-wheel scrolling in the SwiftUI shell (the browser,
+  egui and Win32 ones do have it).
+- The Win32 shell has a plain menu bar rather than Fluent controls, no Mica, and no accessibility
+  beyond the system caret — the deliberate price of an executable with no runtime dependencies.
 - The browser shell has no IME composition, no touch keyboard on mobile, and no scrollbar. A page
   also cannot write back to the file it opened — saving is a download, which is the platform's rule.
 - The egui shell has no scrollbar, no file dialog and no IME; its path comes from `argv`, like the

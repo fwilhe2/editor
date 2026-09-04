@@ -1,8 +1,8 @@
 # Building an app as a shared core with native shells
 
 A guide for agents. This repository is the worked example — one Rust core (`core/`) driving seven
-front-ends: a CLI, a terminal UI, GTK4/GNOME, WinUI 3, SwiftUI, a WebAssembly browser app, and one
-portable GUI that is native to nothing. What follows is what the pattern actually demands, in the
+front-ends: a CLI, a terminal UI, GTK4/GNOME, a Win32 app, SwiftUI, a WebAssembly browser app, and
+one portable GUI that is native to nothing. What follows is what the pattern actually demands, in the
 order you need it, with the traps that cost time and the checks that catch them.
 
 The economics are the point. A genuinely native UI per platform used to mean paying for a different
@@ -152,13 +152,18 @@ seventeen assertions:
 
 | Boundary | Harness | Runs on |
 |---|---|---|
-| Rust ↔ C# | `ffi/csharp-smoke` (console app over the `.so`/`.dll`) | Linux, macOS, Windows |
 | Rust ↔ Swift | `ui_mac`'s `FfiSmoke` product | Linux and macOS |
 | Rust ↔ browser | `ui_web/smoke.js` — the real `.wasm` against the real page in jsdom | anywhere with node |
 | A GUI's actual behaviour | `ui_egui/`'s `egui_kittest` tests — the real app, no display, no GPU | anywhere the crate builds |
 
 Because they run before the app build in CI, a red job tells you immediately whether the bug is in
-the bindings or in the XAML/SwiftUI/CSS. That distinction is worth the whole cost of writing them.
+the bindings or in the SwiftUI/CSS. That distinction is worth the whole cost of writing them.
+
+There used to be a fourth, `ffi/csharp-smoke`, over a C#/WinUI shell. It was deleted with that shell
+([`decision-win32-shell.md`](decision-win32-shell.md)) — worth knowing when reading the advice below
+about foreign shells, which is still correct as *pattern* guidance and simply has one fewer worked
+example behind it here. A Rust-direct shell has no boundary and so needs no harness of this kind;
+its logic modules are unit-tested directly instead.
 
 What this buys per host:
 
@@ -166,10 +171,11 @@ What this buys per host:
 |---|---|---|
 | core, CLI, TUI, wasm module | native | native |
 | GTK build + keymap tests | native (needs `libgtk-4-dev`, `libadwaita-1-dev`) | container (§5.1) |
-| C# and Swift FFI boundaries | native, both | native, both |
+| the Swift FFI boundary | native | native |
 | an immediate-mode GUI's *behaviour* | native, headless | native, headless |
+| a Win32 shell's *source* — type-check + logic tests | native (`--target …-windows-msvc`) | native |
 | SwiftUI as a running app | ✗ | native |
-| WinUI / XAML | ✗ | ✗ (CI on Windows only) |
+| a Win32 window as a running app | ✗ | ✗ (CI on Windows only) |
 | how any GUI *looks* | only on that platform | only on that platform |
 
 The last row is the honest one, and the row above it is the interesting one. A smoke test proves
@@ -276,6 +282,11 @@ put the target directory in a container volume rather than on the mount.
   version out of `Cargo.lock` at build time and fail loudly on a mismatch instead of pinning it in
   prose that goes stale.
 - Generated C# is `internal`: it must be compiled *into* the consuming assembly, not referenced.
+- Weigh a foreign shell against a Rust-direct one per platform, not once for the project. A foreign
+  shell buys the platform's own toolkit and costs a generator, a second toolchain and a runtime the
+  user has to have; where the platform's C API is reachable from Rust, the same window can often be
+  had with neither. Windows went that way here; macOS did not, because AppKit is not usefully
+  reachable without Swift.
 - Named constructors do not become initialisers in Swift; only one called `new` does.
 - Stop the platform's own undo stack (AppKit's, for one) from swallowing ⌘Z, since it knows nothing
   about your document.
