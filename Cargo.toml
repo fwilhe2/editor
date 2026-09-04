@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "cli", "ffi", "ui_tui", "ui_linux", "ui_web", "ui_egui"]
+members = ["core", "cli", "ffi", "ui_tui", "ui_linux", "ui_web", "ui_egui", "ui_win32"]
 
 [workspace.package]
 version = "0.1.0"
@@ -20,8 +20,30 @@ ratatui = "0.30"
 libadwaita = { version = "0.7", features = ["v1_5"] }
 # Carries core notifications from the observer onto the GTK main context.
 async-channel = "2"
-# Pinned to what uniffi-bindgen-cs v0.11.0 targets; the two must match exactly.
+# Swift bindings come from a uniffi-bindgen binary inside `ffi/` itself, so the
+# generator can never be on a different version from the runtime. There is no
+# second version to pin here any more: the C# shell, and with it the external
+# uniffi-bindgen-cs generator, was replaced by ui_win32/ — see
+# doc/decision-win32-shell.md.
 uniffi = "0.31"
+# The Win32 shell. Microsoft's own projection of the Windows API, and the whole of
+# that shell's dependency list — there is deliberately nothing else. Only the
+# features it actually calls are enabled; the crate is enormous and feature-gated
+# per module, so an unused one costs nothing but an unnoticed one fails to link.
+#
+# Declared under a `cfg(windows)` target in ui_win32/Cargo.toml, which is what lets
+# the shell's portable modules compile and test on any host.
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Globalization",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Registry",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }
 # The browser shell's binding mechanism — neither a Cargo dependency on the core
 # (that is how it reaches the core) nor UniFFI, which has no JavaScript target.
 # wasm-bindgen and the `wasm-bindgen` CLI that post-processes the module must be

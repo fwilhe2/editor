@@ -1,0 +1,17 @@
+# Statically link the MSVC C runtime.
+#
+# This is what makes `edit-win32.exe` depend on nothing but the DLLs Windows
+# itself ships. `ucrtbase.dll` is part of the operating system, but the default
+# dynamic link also pulls in `vcruntime140.dll`, which is *not* — it comes from
+# the Visual C++ redistributable, and a machine without it gets a missing-DLL
+# dialog rather than an editor.
+#
+# The whole point of doc/decision-win32-shell.md is an executable that runs on a
+# clean Windows install, so this is load-bearing rather than a preference.
+# Applies to every crate built for Windows; the other shells are unaffected
+# because they are not built for this target.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

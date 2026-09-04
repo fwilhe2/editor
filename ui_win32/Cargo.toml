@@ -1,0 +1,21 @@
+[package]
+name = "editor-win32"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Win32 shell over the editor core, with no runtime dependencies"
+
+[[bin]]
+name = "edit-win32"
+path = "src/main.rs"
+
+[dependencies]
+editor-core.workspace = true
+
+# Target-gated on purpose. `keymap.rs` and `layout.rs` are deliberately free of
+# Windows types, so gating the dependency this way lets them compile and run their
+# tests on any host — which is how this shell's logic is checked on the Linux
+# machine this repository is developed on. Everything that needs a window lives
+# behind `#[cfg(windows)]` in `app.rs` and `main.rs`.
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
