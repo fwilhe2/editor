@@ -1,16 +1,34 @@
+# SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+
 [package]
-name = "editor-cli"
+name = "quill-cli"
+description = "The editor from the command line — every capability any window has, scriptable"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Scriptable command-line front-end over the editor core"
+repository.workspace = true
+publish.workspace = true
 
 [[bin]]
-name = "edit"
+name = "quill"
 path = "src/main.rs"
 
 [dependencies]
-editor-core.workspace = true
+quill-core.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+# `cargo deb -p quill-cli --no-build` and `cargo generate-rpm -p cli` in `artifacts.yml`
+# package the binary that job's one release build produced. `cli/tests/packaging.rs` fails if
+# either block, or either line in the workflow, goes missing.
+[package.metadata.deb]
+name = "quill"
+section = "editors"
+assets = [["target/release/quill", "usr/bin/", "755"]]
+
+[package.metadata.generate-rpm]
+name = "quill"
+assets = [{ source = "target/release/quill", dest = "/usr/bin/quill", mode = "755" }]

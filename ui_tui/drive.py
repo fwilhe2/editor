@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Drive edit-tui non-interactively, for checking a change without a human at a terminal.
+# SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+"""Drive quill-tui non-interactively, for checking a change without a human at a terminal.
 
     ui_tui/drive.py FILE                    # start, then quit
     ui_tui/drive.py FILE 'hi\\r' '\\x13' '\\x11'   # type "hi", Enter, Ctrl+S, Ctrl+Q
@@ -26,7 +29,7 @@ import sys
 import termios
 import time
 
-BINARY = os.environ.get("EDIT_TUI", "target/debug/edit-tui")
+BINARY = os.environ.get("QUILL_TUI", "target/debug/quill-tui")
 CURSOR_QUERY = b"\x1b[6n"
 CURSOR_REPORT = b"\x1b[1;1R"  # "the cursor is at row 1, column 1"
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]|\x1b[()][A-Z0-9]|\x1b[=>]|\r")
@@ -69,7 +72,7 @@ def main(path, keys):
     code = os.waitstatus_to_exitcode(status)
 
     print(ANSI.sub(b"", output).decode("utf-8", "replace").strip())
-    print(f"\n[edit-tui exited {code}]", file=sys.stderr)
+    print(f"\n[quill-tui exited {code}]", file=sys.stderr)
     return code
 
 

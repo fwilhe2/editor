@@ -1,29 +1,38 @@
+# SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+
 [package]
-name = "editor-web"
+name = "quill-web"
+description = "The editor in a browser tab — WebAssembly, drawn into the DOM"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Browser / WebAssembly shell over the editor core"
+repository.workspace = true
+publish.workspace = true
 
 [lib]
-# cdylib is what `cargo build --target wasm32-unknown-unknown` turns into a
-# `.wasm` module; rlib keeps `cargo test` working on the host, where the keymap
-# runs without a browser.
+# `cdylib` is what `--target wasm32-unknown-unknown` turns into a `.wasm` module; `rlib` keeps
+# `cargo test` working on the host, where the DOM-free modules run without a browser.
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-editor-core.workspace = true
+quill-core.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 js-sys.workspace = true
 
-# web-sys is one crate per web API, gated feature by feature: every DOM type this
-# shell touches has to be listed here or it does not exist.
+# web-sys is gated feature by feature: every DOM type this shell touches is listed here, or it
+# does not exist.
 [dependencies.web-sys]
 workspace = true
 features = [
   "Blob",
+  "CanvasRenderingContext2d",
+  "Clipboard",
+  "ClipboardEvent",
   "CssStyleDeclaration",
+  "DataTransfer",
   "Document",
   "DomRect",
   "Element",
@@ -33,11 +42,18 @@ features = [
   "FileList",
   "HtmlAnchorElement",
   "HtmlButtonElement",
+  "HtmlCanvasElement",
+  "HtmlDocument",
   "HtmlElement",
   "HtmlInputElement",
+  "HtmlTextAreaElement",
+  "InputEvent",
   "KeyboardEvent",
   "MouseEvent",
+  "Navigator",
   "Node",
+  "NodeList",
+  "TextMetrics",
   "Url",
   "WheelEvent",
   "Window",

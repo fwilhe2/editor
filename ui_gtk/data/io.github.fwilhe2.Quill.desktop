@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+[Desktop Entry]
+Type=Application
+Name=Quill
+Comment=Edit plain text files
+Exec=quill-gtk %f
+Icon=io.github.fwilhe2.Quill
+Terminal=false
+Categories=Utility;TextEditor;GTK;
+MimeType=text/plain;
+Keywords=text;plain;edit;
+StartupNotify=true

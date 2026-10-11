@@ -1,0 +1,259 @@
+# SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+
+name: artifacts
+
+# The release tier. **One release build per platform, and everything that has something to say
+# about that build is a later step in the same job**: the packages, the self-checks, the
+# reproducible frames, the sizes, the uploads. A consumer that needed a runner of its own would
+# have to build again, which is the duplication this shape exists to remove (doc/ci.md).
+#
+# The jobs are platforms, not products: they are separate because a PE links on Windows, a
+# Mach-O on macOS, and a wasm module needs a matched `wasm-bindgen` — never cross-compiled.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: artifacts-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgtk-4-dev libadwaita-1-dev
+
+      - name: Build every Linux binary, release
+        run: cargo build --release --locked -p quill-cli -p quill-tui -p quill-gtk
+
+      - name: The GNOME window draws the same frame twice, with no display
+        run: |
+          examples/sample.sh "$RUNNER_TEMP/demo" > /dev/null
+          for n in one two; do
+            target/release/quill-gtk "$RUNNER_TEMP/demo/sample.txt" --render-to "gtk-$n.png" --size 900x500
+          done
+          cmp gtk-one.png gtk-two.png
+          target/release/quill-gtk "$RUNNER_TEMP/demo/sample.txt" --render-to gtk-dark.png --size 900x500 --dark
+          ! cmp -s gtk-one.png gtk-dark.png
+        env:
+          QUILL_BIN: target/release/quill
+
+      - name: Sizes
+        run: |
+          {
+            echo '## Linux binaries'
+            echo '| binary | bytes |'
+            echo '|---|---:|'
+            for b in quill quill-tui quill-gtk; do
+              echo "| \`$b\` | $(stat -c%s "target/release/$b") |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2.87.23
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+
+      # `--no-build`: cargo deb builds what it packages otherwise, which is how one release
+      # build becomes four. `cli/tests/packaging.rs` reads these lines and fails the build when a
+      # packaged binary has none.
+      - name: Debian packages
+        run: |
+          cargo deb -p quill-cli --no-build
+          cargo deb -p quill-tui --no-build
+          cargo deb -p quill-gtk --no-build
+      - name: RPM packages
+        run: |
+          cargo generate-rpm -p cli
+          cargo generate-rpm -p ui_tui
+          cargo generate-rpm -p ui_gtk
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-packages
+          path: |
+            target/debian/*.deb
+            target/generate-rpm/*.rpm
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-frames
+          path: gtk-*.png
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Puts `rc.exe` on PATH, which `build.rs` needs to embed the icon, version and manifest.
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      # Here the `cfg(windows)` tests run too: the virtual-key codes against winuser.h's.
+      - name: Test
+        run: cargo test --locked -p quill-win32
+
+      - name: Build the Windows shell, release
+        run: cargo build --release --locked -p quill-win32
+
+      - name: The executable depends on nothing Windows does not ship
+        shell: pwsh
+        run: |
+          $exe = "target/release/quill-win32.exe"
+          $ascii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($exe))
+          $dlls = [regex]::Matches($ascii, '[A-Za-z0-9_\-]+\.[Dd][Ll][Ll]') |
+            ForEach-Object { $_.Value.ToLower() } | Sort-Object -Unique
+          Write-Host "DLL names in ${exe}:"; $dlls | ForEach-Object { Write-Host "  $_" }
+          $bad = $dlls | Where-Object { $_ -in @('vcruntime140.dll', 'vcruntime140_1.dll',
+            'msvcp140.dll', 'ucrtbase.dll', 'mscoree.dll') -or $_ -like 'api-ms-win-crt-*' }
+          if ($bad) { Write-Error "runtime dependencies Windows does not ship: $($bad -join ', ')"; exit 1 }
+
+      - name: The stack reserve, the version block, the icon and the manifest survived
+        shell: pwsh
+        run: |
+          $exe = "target/release/quill-win32.exe"
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $reserve = [BitConverter]::ToUInt64($bytes, $pe + 24 + 0x48)
+          if ($reserve -lt 8388608) { Write-Error "stack reserve $reserve < 8 MB (.cargo/config.toml)"; exit 1 }
+          $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path $exe))
+          if ($info.ProductName -ne "Quill") { Write-Error "no version resource (ui_win32/data/app.rc)"; exit 1 }
+          Add-Type -AssemblyName System.Drawing
+          if ($null -eq [System.Drawing.Icon]::ExtractAssociatedIcon((Resolve-Path $exe))) { Write-Error "no icon"; exit 1 }
+          $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+          if (-not $ascii.Contains("PerMonitorV2")) { Write-Error "no application manifest"; exit 1 }
+          Write-Host "OK: $($info.ProductName) $($info.ProductVersion), icon, manifest, 8 MB stack"
+
+      # `--render-to` draws with no window: a memory DC over a DIB section. Two renders of one
+      # document must be byte-identical, and the dark one must differ.
+      - name: The same frame twice, and a dark one
+        shell: pwsh
+        env:
+          QUILL_NO_DIALOGS: "1"
+        run: |
+          $doc = "doc/architecture.md"
+          $exe = "target/release/quill-win32.exe"
+          foreach ($extra in @(@("one.bmp"), @("two.bmp"), @("dark.bmp", "--dark"))) {
+            $p = Start-Process $exe -ArgumentList (@($doc, "--size", "900x500", "--render-to") + $extra) -Wait -PassThru
+            if ($p.ExitCode -ne 0) { Write-Error "render failed: $($p.ExitCode)"; exit 1 }
+          }
+          $one = [IO.File]::ReadAllBytes("one.bmp"); $two = [IO.File]::ReadAllBytes("two.bmp")
+          $dark = [IO.File]::ReadAllBytes("dark.bmp")
+          if ($one.Length -ne 54 + 900 * 3 * 500) { Write-Error "unexpected size $($one.Length)"; exit 1 }
+          if (@(Compare-Object $one $two -SyncWindow 0).Count -ne 0) { Write-Error "two renders differ"; exit 1 }
+          if (@(Compare-Object $one $dark -SyncWindow 0).Count -eq 0) { Write-Error "--dark drew the light frame"; exit 1 }
+          Write-Host "OK: reproducible, and the dark palette is its own frame"
+
+      - name: Size
+        shell: bash
+        run: echo "quill-win32.exe — $(stat -c%s target/release/quill-win32.exe) bytes" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows
+          path: |
+            target/release/quill-win32.exe
+            one.bmp
+            dark.bmp
+          if-no-files-found: error
+
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor and the current release: a floor that is never run is a claim never checked.
+        os: [macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Test
+        run: cargo test --locked -p quill-mac
+
+      - name: Build both slices, release
+        run: |
+          cargo build --release --locked -p quill-mac -p quill-cli
+          cargo build --release --locked -p quill-mac --target x86_64-apple-darwin
+
+      # CoreGraphics and CoreText draw into a bitmap with no window server.
+      - name: The same frame twice, and a dark one
+        run: |
+          QUILL_BIN=target/release/quill examples/sample.sh "$RUNNER_TEMP/demo" > /dev/null
+          for n in one two; do
+            target/release/quill-mac "$RUNNER_TEMP/demo/sample.txt" --render-to "mac-$n.png" --size 900x500
+          done
+          cmp mac-one.png mac-two.png
+          target/release/quill-mac "$RUNNER_TEMP/demo/sample.txt" --render-to mac-dark.png --size 900x500 --dark
+          ! cmp -s mac-one.png mac-dark.png
+
+      - name: Quill.app, its checks, and the DMG
+        run: |
+          .github/scripts/mac-bundle.sh target/release/quill-mac \
+            target/x86_64-apple-darwin/release/quill-mac bundle
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-${{ matrix.os }}
+          path: |
+            bundle/Quill.dmg
+            mac-*.png
+          if-no-files-found: error
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # The CLI must equal the crate exactly, so the version is read from Cargo.lock rather than
+      # pinned in a second place that would go stale.
+      - name: The wasm-bindgen version cargo resolved
+        id: wasm_bindgen
+        run: |
+          version="$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p' | head -n1)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2.87.23
+        with:
+          tool: wasm-bindgen@${{ steps.wasm_bindgen.outputs.version }}
+
+      - name: Build the browser shell, release
+        run: ./ui_web/build.sh release
+      # Before the upload, so a red job says "wasm, glue or wiring" rather than "CSS".
+      - name: The browser boundary, in jsdom
+        run: ./ui_web/smoke.sh release
+      - name: Size
+        run: echo "editor_web_bg.wasm — $(stat -c%s ui_web/dist/editor_web_bg.wasm) bytes" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: web
+          path: ui_web/dist
+          if-no-files-found: error

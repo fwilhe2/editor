@@ -1,21 +1,33 @@
+# SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+
 [package]
-name = "editor-win32"
+name = "quill-win32"
+description = "The editor as a Win32 application, depending on nothing Windows does not ship"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Win32 shell over the editor core, with no runtime dependencies"
+repository.workspace = true
+publish.workspace = true
 
 [[bin]]
-name = "edit-win32"
+name = "quill-win32"
 path = "src/main.rs"
 
 [dependencies]
-editor-core.workspace = true
+quill-core.workspace = true
 
-# Target-gated on purpose. `keymap.rs` and `layout.rs` are deliberately free of
-# Windows types, so gating the dependency this way lets them compile and run their
-# tests on any host — which is how this shell's logic is checked on the Linux
-# machine this repository is developed on. Everything that needs a window lives
-# behind `#[cfg(windows)]` in `app.rs` and `main.rs`.
+# Target-gated on purpose, and this is the design rather than a tidy-up. Everything decidable
+# without a window — the command line, the menus as data, the keys, the palette, UTF-16 input —
+# is a portable module outside `cfg(windows)`, so it compiles and runs its tests on Linux. The
+# window and GDI live behind `#[cfg(windows)]`, and `cargo check --target
+# x86_64-pc-windows-msvc` type-checks them from Linux too, because checking never links.
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true
+
+# `build.rs` compiles `data/app.rc` — the icon, the version block Explorer's Properties dialog
+# reads, and the application manifest. A build dependency builds for the *host*, so this is
+# not target-gated; `build.rs` asks `CARGO_CFG_TARGET_OS` whether there is anything to do.
+[build-dependencies]
+embed-resource.workspace = true

@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+
+[package]
+name = "quill-mac"
+description = "The editor as a macOS application: AppKit and CoreText from Rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "quill-mac"
+path = "src/main.rs"
+
+[dependencies]
+quill-core.workspace = true
+
+# Gated on macOS, so the portable half — the menus as data, the key selectors, the PNG encoder,
+# the Info.plist — tests on Linux, while `cargo check --target aarch64-apple-darwin` type-checks
+# the AppKit half from Linux too: objc2's framework crates are pure Rust with their bindings
+# checked in, and checking never links. Default features off and every class named, as with
+# `windows`: the frameworks are enormous.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-foundation = { workspace = true, features = [
+    "std",
+    "NSArray",
+    "NSAttributedString",
+    "NSData",
+    "NSDictionary",
+    "NSGeometry",
+    "NSNotification",
+    "NSObject",
+    "NSRange",
+    "NSString",
+    "NSURL",
+] }
+objc2-app-kit = { workspace = true, features = [
+    "std",
+    "objc2-core-foundation",
+    "objc2-core-graphics",
+    "NSAlert",
+    "NSAppearance",
+    "NSApplication",
+    "NSAttributedString",
+    "NSButton",
+    "NSControl",
+    "NSEvent",
+    "NSGraphics",
+    "NSGraphicsContext",
+    "NSMenu",
+    "NSMenuItem",
+    "NSOpenPanel",
+    "NSPanel",
+    "NSPasteboard",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSSavePanel",
+    "NSText",
+    "NSTextField",
+    "NSTextInputClient",
+    "NSView",
+    "NSWindow",
+] }
+objc2-core-foundation = { workspace = true, features = [
+    "std",
+    "CFAttributedString",
+    "CFCGTypes",
+    "CFDictionary",
+    "CFNumber",
+    "CFString",
+] }
+objc2-core-graphics = { workspace = true, features = [
+    "std",
+    "CGBitmapContext",
+    "CGColorSpace",
+    "CGContext",
+    "CGImage",
+] }
+objc2-core-text = { workspace = true, features = [
+    "std",
+    "objc2-core-graphics",
+    "CTFont",
+    "CTLine",
+    "CTStringAttributes",
+] }

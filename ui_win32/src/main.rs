@@ -1,110 +1,107 @@
-//! `edit-win32` — the Windows shell over the editor core.
-//!
-//! Rust-direct like the CLI, TUI, GTK and portable shells: it depends on
-//! `editor-core` as an ordinary Cargo dependency, with no FFI, no bindings and no
-//! generated code. That is a change from what stood here before — a WinUI 3
-//! application in C# reaching the core through UniFFI — and the reasoning is in
-//! `doc/decision-win32-shell.md`.
-//!
-//! What it buys is stated in one line and meant literally: **the built `.exe` needs
-//! nothing that Windows does not already ship.** No .NET runtime, no Windows App
-//! SDK, no Visual C++ redistributable. It links `user32`, `gdi32`, `dwmapi` and
-//! `advapi32`, all of which are part of the operating system, and the MSVC C runtime
-//! is linked statically by `.cargo/config.toml`.
-//!
-//! What it costs is the Fluent control set. This window is drawn with GDI, so it
-//! follows Windows' *conventions* — the shell font, the user's wheel and caret
-//! settings, Ctrl+Y for redo, a Save/Don't Save/Cancel dialog on close, a dark title
-//! bar when the user's theme is dark — without using Windows' *controls*.
-//!
-//! This file owns the process; `app.rs` owns the window.
+// SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+//
+// SPDX-License-Identifier: MIT
 
-// A GUI application, not a console one. Without this, launching the editor from
-// Explorer flashes up a console window behind it and leaves it there for the life of
-// the process. The cost is that there is no stderr to print to, which is why the
-// argument errors below go into a message box — the same bargain every Windows GUI
-// application makes.
+//! `quill-win32` — the editor as a Windows application: Win32 and GDI from Rust, through
+//! Microsoft's own `windows` crate.
+//!
+//! **The `.exe` needs nothing Windows does not already ship.** No .NET, no Windows App SDK, no
+//! Visual C++ redistributable: it links system DLLs only, and `.cargo/config.toml` links the C
+//! runtime statically. `artifacts.yml` reads the import table back on `windows-latest` and fails
+//! if anything else appears. (`doc/decisions/0001-win32-shell.md` is why Win32 rather than
+//! WinUI.)
+//!
+//! **And half of it tests on Linux.** The command line, the menus as data, the keys, the theme
+//! and the window's geometry are portable modules; only `gdi.rs` and `win.rs` need Windows, and
+//! `cargo check --target x86_64-pc-windows-msvc` type-checks even those without it.
+
+// A GUI application, not a console one, or Explorer opens a console window behind it.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-// Off Windows there is no `app` to call into these, so every function in them reads
-// as dead code — but their tests are the reason the crate builds here at all, and
-// silencing the lint is what keeps `cargo clippy` clean on the development machine.
+mod args;
+// Off Windows nothing calls into these, so their functions read as dead code — but their tests
+// are the reason the crate builds there at all.
 #[cfg_attr(not(windows), allow(dead_code))]
 mod keymap;
 #[cfg_attr(not(windows), allow(dead_code))]
-mod layout;
+mod menu;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod theme;
 
 #[cfg(windows)]
-mod app;
-
-const USAGE: &str = "usage: edit-win32 <file>
-
-A Win32 shell for Windows, depending on nothing the system does not ship.
-";
+mod gdi;
+#[cfg(windows)]
+mod win;
 
 #[cfg(windows)]
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
     use std::sync::Arc;
 
-    use editor_core::Editor;
-
-    let mut args = std::env::args().skip(1);
-    let Some(path) = args.next() else {
-        message_box("usage", USAGE);
-        return ExitCode::from(2);
+    let args = match args::parse(std::env::args().skip(1)) {
+        Ok(args) => args,
+        Err(message) => return fail(&format!("{message}\n\n{}", args::USAGE)),
     };
-    if path == "-h" || path == "--help" {
-        message_box("edit-win32", USAGE);
-        return ExitCode::SUCCESS;
+    let app = Arc::new(quill_core::App::new());
+    if let Some(path) = &args.file {
+        let result = if path.exists() {
+            app.open_file(path)
+        } else {
+            app.open_bytes(Some(&path.display().to_string()), b"")
+        };
+        if let Err(error) = result {
+            return fail(&error.to_string());
+        }
     }
 
-    // Opening fails on a missing file rather than inventing an empty buffer, so a
-    // typo cannot silently create a document. `edit new <file>` creates one.
-    let editor = match Editor::open(&path) {
-        Ok(editor) => Arc::new(editor),
-        Err(error) => {
-            message_box("edit-win32", &format!("{error}"));
-            return ExitCode::FAILURE;
-        }
-    };
+    // One frame into a BMP with no window, and out.
+    if let Some(out) = &args.render_to {
+        let theme = if args.dark {
+            theme::Theme::dark()
+        } else {
+            theme::Theme::light()
+        };
+        let bmp = gdi::render_to_bmp(&app, args.size.0, args.size.1, &theme);
+        return match std::fs::write(out, bmp) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => fail(&format!("{}: {error}", out.display())),
+        };
+    }
 
-    match app::run(editor) {
+    match win::run_window(app) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            message_box("edit-win32", &format!("{error}"));
-            ExitCode::FAILURE
+        Err(error) => fail(&error.to_string()),
+    }
+}
+
+/// Say something before there is a window to say it in. A GUI-subsystem binary has no console,
+/// so `eprintln!` would go nowhere when started from Explorer — and somewhere when started from
+/// a terminal or a CI step, which is why it prints as well.
+#[cfg(windows)]
+fn fail(text: &str) -> std::process::ExitCode {
+    use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+    use windows::core::{PCWSTR, w};
+
+    eprintln!("quill-win32: {text}");
+    if std::env::var_os("QUILL_NO_DIALOGS").is_none() {
+        let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            MessageBoxW(
+                None,
+                PCWSTR(wide.as_ptr()),
+                w!("Quill"),
+                MB_OK | MB_ICONERROR,
+            );
         }
     }
+    std::process::ExitCode::FAILURE
 }
 
-/// Say something before there is a window to say it in.
-///
-/// A GUI subsystem binary has no console to print to — `eprintln!` here goes
-/// nowhere at all when the program is launched from Explorer. The other shells can
-/// use stderr; this one has to ask the system for a dialog.
-#[cfg(windows)]
-fn message_box(title: &str, text: &str) {
-    use windows::core::PCWSTR;
-    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
-
-    let text: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-    let title: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
-    unsafe {
-        MessageBoxW(
-            None,
-            PCWSTR(text.as_ptr()),
-            PCWSTR(title.as_ptr()),
-            MB_OK | MB_ICONERROR,
-        );
-    }
-}
-
-/// On anything but Windows this crate still builds, so that `keymap.rs` and
-/// `layout.rs` can be compiled and tested on the machine this repository is
-/// developed on. The binary itself has nothing to do there.
+/// Off Windows the crate still builds, so its portable modules compile and test where the
+/// repository is developed. The binary has nothing to do there.
 #[cfg(not(windows))]
 fn main() -> std::process::ExitCode {
-    eprint!("edit-win32 runs on Windows only.\n\n{USAGE}");
+    let _ = args::parse(std::env::args().skip(1));
+    eprint!("quill-win32 runs on Windows only.\n\n{}", args::USAGE);
     std::process::ExitCode::FAILURE
 }

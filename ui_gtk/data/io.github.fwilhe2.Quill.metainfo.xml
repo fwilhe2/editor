@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+
+SPDX-License-Identifier: MIT
+-->
+<component type="desktop-application">
+  <id>io.github.fwilhe2.Quill</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Quill</name>
+  <summary>Edit plain text files</summary>
+  <description>
+    <p>
+      A plain text editor built as a shared core with native shells: one Rust library holds
+      every rule, and this GNOME application draws what it says.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.fwilhe2.Quill.desktop</launchable>
+  <url type="homepage">https://github.com/fwilhe2/editor</url>
+  <developer id="io.github.fwilhe2">
+    <name>Florian Wilhelm</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-10-11"/>
+  </releases>
+</component>

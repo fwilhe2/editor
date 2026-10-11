@@ -1,61 +1,55 @@
 #!/usr/bin/env bash
-# Build the browser shell into ui_web/dist.
+# SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
 #
-# Two steps, because the Rust compiler only produces half of what a page needs: a
-# `.wasm` module, and then the `wasm-bindgen` CLI to write the JavaScript glue that
-# loads it and marshals values across. The CLI's version must match the
-# `wasm-bindgen` crate the module was compiled against — a mismatch fails with a
-# schema error, which is why this script checks first.
+# SPDX-License-Identifier: MIT
+#
+# Build the browser shell into ui_web/dist.
 #
 #   ui_web/build.sh [debug|release]
 #
-# Prerequisites (see .github/workflows/web.yml for the CI equivalent):
+# Two steps, because rustc produces only half of what a page needs: a `.wasm` module, and then
+# the `wasm-bindgen` CLI writes the JavaScript glue that loads it. The CLI's version must equal
+# the `wasm-bindgen` crate's or the glue will not load the module — so this script reads the
+# version cargo resolved out of Cargo.lock and refuses to run on a mismatch, rather than
+# pinning it in prose that goes stale.
+#
 #   rustup target add wasm32-unknown-unknown
-#   cargo install wasm-bindgen-cli --version <the version printed below>
+#   cargo install wasm-bindgen-cli --version <the version this script asks for>
 
 set -euo pipefail
 
 profile="${1:-release}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 dist="$root/ui_web/dist"
+target_dir="${CARGO_TARGET_DIR:-$root/target}"
 
 case "$profile" in
-    debug)   cargo_flags=() ;;
-    release) cargo_flags=(--release) ;;
+    debug) flags=() ;;
+    release) flags=(--release) ;;
     *) echo "usage: $(basename "$0") [debug|release]" >&2; exit 2 ;;
 esac
 
-# The version cargo actually resolved, so the check below is never out of date.
-# The exact-match pattern is what keeps wasm-bindgen-futures from answering.
+# The exact-name match keeps wasm-bindgen-futures and friends from answering.
 wanted="$(grep -A1 '^name = "wasm-bindgen"$' "$root/Cargo.lock" \
     | sed -n 's/^version = "\(.*\)"/\1/p' | head -n1)"
-
 if ! command -v wasm-bindgen >/dev/null 2>&1; then
-    echo "wasm-bindgen CLI not found — run: cargo install wasm-bindgen-cli --version $wanted" >&2
+    echo "wasm-bindgen CLI not found — cargo install wasm-bindgen-cli --version $wanted" >&2
     exit 1
 fi
-
 have="$(wasm-bindgen --version | awk '{print $2}')"
 if [ "$have" != "$wanted" ]; then
     echo "wasm-bindgen CLI is $have but the crate is $wanted; the glue would not load." >&2
-    echo "run: cargo install wasm-bindgen-cli --version $wanted" >&2
+    echo "cargo install wasm-bindgen-cli --version $wanted" >&2
     exit 1
 fi
 
-cargo build -p editor-web --target wasm32-unknown-unknown "${cargo_flags[@]}"
+cargo build -p quill-web --target wasm32-unknown-unknown "${flags[@]}"
 
 rm -rf "$dist"
 mkdir -p "$dist"
-
-wasm-bindgen \
-    --target web \
-    --no-typescript \
-    --out-dir "$dist" \
-    --out-name editor_web \
-    "$root/target/wasm32-unknown-unknown/$profile/editor_web.wasm"
-
-# The page is static; it only ever needed the module next to it.
+wasm-bindgen --target web --no-typescript --out-dir "$dist" --out-name quill_web \
+    "$target_dir/wasm32-unknown-unknown/$profile/quill_web.wasm"
 cp "$root/ui_web/index.html" "$root/ui_web/style.css" "$dist/"
 
-echo "ui_web/dist is ready — serve it, do not open index.html from disk:"
+echo "ui_web/dist is ready. Serve it — browsers refuse ES modules and wasm over file://:"
 echo "  python3 -m http.server --directory ui_web/dist 8000"

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+
+SPDX-License-Identifier: MIT
+-->
+<!-- The template's mark: a page with three lines of text and a caret. A placeholder by design;
+     scripts/bootstrap.py copies it under the new application ID, and a real app replaces it. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <rect x="12" y="8" width="104" height="112" rx="14" fill="#1c3f6e"/>
+  <rect x="20" y="16" width="88" height="96" rx="8" fill="#ffffff"/>
+  <rect x="32" y="36" width="56" height="8" rx="4" fill="#1c3f6e"/>
+  <rect x="32" y="56" width="64" height="8" rx="4" fill="#1c3f6e"/>
+  <rect x="32" y="76" width="36" height="8" rx="4" fill="#1c3f6e"/>
+  <rect x="74" y="70" width="5" height="20" rx="2" fill="#3584e4"/>
+</svg>

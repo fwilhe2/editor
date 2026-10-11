@@ -1,14 +1,22 @@
+# SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+
 [package]
-name = "editor-core"
+name = "quill-core"
+description = "The editor's logic — every shell's single source of truth"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Platform-agnostic editor logic shared by every UI shell"
+repository.workspace = true
+publish.workspace = true
 
 [lib]
-name = "editor_core"
+name = "quill_core"
 
 [dependencies]
 ropey.workspace = true
+unicode-linebreak.workspace = true
+unicode-segmentation.workspace = true
 serde.workspace = true
 thiserror.workspace = true

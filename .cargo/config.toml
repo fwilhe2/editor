@@ -1,17 +1,29 @@
-# Statically link the MSVC C runtime.
+# SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
 #
-# This is what makes `edit-win32.exe` depend on nothing but the DLLs Windows
-# itself ships. `ucrtbase.dll` is part of the operating system, but the default
-# dynamic link also pulls in `vcruntime140.dll`, which is *not* — it comes from
-# the Visual C++ redistributable, and a machine without it gets a missing-DLL
-# dialog rather than an editor.
-#
-# The whole point of doc/decision-win32-shell.md is an executable that runs on a
-# clean Windows install, so this is load-bearing rather than a preference.
-# Applies to every crate built for Windows; the other shells are unaffected
-# because they are not built for this target.
+# SPDX-License-Identifier: MIT
+
+# Platform build settings. Each one is load-bearing rather than a preference, and each is read
+# only by the targets it names.
+
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
+rustflags = [
+    # Link the MSVC C runtime statically. The default dynamic link pulls in `vcruntime140.dll`,
+    # which is *not* part of Windows — it comes with the Visual C++ redistributable, and a
+    # machine without it gets a missing-DLL dialog rather than an editor. `artifacts.yml` reads
+    # the import table back and fails if anything outside Windows appears in it.
+    "-C", "target-feature=+crt-static",
+    # Reserve 8 MB of main-thread stack, what Linux and macOS give, where MSVC's default is 1 MB.
+    # Measured in grind: an unoptimised build overflowed under Wine before `main` did anything.
+    # A reserve is address space, not memory, so a 64-bit process pays nothing for it.
+    "-C", "link-arg=/STACK:8388608",
+]
 
 [target.aarch64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/STACK:8388608"]
+
+# The oldest macOS the Mac shell runs on — the oldest GitHub still runs, because a floor that is
+# never run is a claim that is never checked (`doc/shells/mac.md`). Read by rustc for the Apple
+# targets only; `[env]` never overrides a value already set, so an older floor is one variable
+# away.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "15.0"

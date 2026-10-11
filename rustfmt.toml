@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+
+# The formatter is not a place to have opinions: these are rustfmt's own defaults, written down
+# so `cargo fmt` is the same operation on every machine and in every editor that runs it on
+# save. Everything else worth setting is nightly-only, and a config CI cannot check drifts.
+style_edition = "2024"
+max_width = 100

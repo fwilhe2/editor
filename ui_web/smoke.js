@@ -1,20 +1,19 @@
-// A UI-free test of the browser boundary.
+// SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
 //
-// The sibling of `ffi/csharp-smoke` and `ui_mac`'s `FfiSmoke`: it drives the real
-// wasm module against the real `index.html`, so a failure here is a wasm, glue or
-// wiring problem, and a page that misbehaves after this passes is CSS.
+// SPDX-License-Identifier: MIT
+
+// A UI-free test of the browser boundary: the real wasm module against the real index.html.
 //
-// jsdom has no layout engine — every rectangle it reports is zero — so the shell
-// falls back to its metric guards and the viewport is one line tall. That is
-// enough to exercise everything except how things look, and it means this runs on
-// any machine with node, exactly as the other two smoke tests run without their
-// platform's UI toolkit.
+// A failure here is a wasm, glue or wiring problem; a page that misbehaves after this passes is
+// CSS. jsdom has no layout engine and no canvas — every rectangle is zero and nothing can be
+// measured — so the shell falls back to its guards: no wrapping, one row tall, eight pixels a
+// character. That exercises everything except how things look.
 //
 // Run it through ui_web/smoke.sh, which builds the pieces it needs.
 
 const fs = require("fs");
 const path = require("path");
-const { JSDOM } = require("jsdom");
+const { JSDOM, VirtualConsole } = require("jsdom");
 
 const here = __dirname;
 const html = fs
@@ -22,37 +21,48 @@ const html = fs
   // The page loads the ES module build; this harness requires the node one below.
   .replace(/<script type="module">[\s\S]*?<\/script>/, "");
 
-const dom = new JSDOM(html, { pretendToBeVisual: true, url: "http://localhost/" });
+// jsdom says "not implemented" for a canvas context, which is the fallback being exercised.
+const quiet = new VirtualConsole();
+quiet.on("jsdomError", (e) => {
+  if (!String(e.message).includes("Not implemented")) console.error(e);
+});
+const dom = new JSDOM(html, {
+  pretendToBeVisual: true,
+  url: "http://localhost/",
+  virtualConsole: quiet,
+});
 
-// The generated glue type-checks values with `instanceof Window`, `instanceof
-// HTMLButtonElement` and so on, so every DOM constructor has to be a real global.
+// The glue type-checks values with `instanceof Window` and friends, so every DOM constructor
+// has to be a real global.
 global.window = dom.window;
 for (const key of Object.getOwnPropertyNames(dom.window)) {
   if (key in global) continue;
   try {
     global[key] = dom.window[key];
   } catch {
-    // Some window properties are getters that throw outside a browser; skip them.
+    // Some window properties are getters that throw outside a browser.
   }
 }
 global.document = dom.window.document;
 
 // Instantiating the module runs `start()`, which wires the page up.
-require(path.join(here, ".smoke/editor_web.js"));
+require(path.join(here, ".smoke/quill_web.js"));
 
 const byId = (id) => document.getElementById(id);
-const rendered = () => [...byId("text").children].map((line) => line.textContent).join("\n");
+const rows = () => [...document.querySelectorAll("#rows .row")].map((r) => r.textContent).join("\n");
 const frame = () => new Promise((resolve) => dom.window.requestAnimationFrame(resolve));
 
-const press = (key, modifiers = {}) =>
-  byId("surface").dispatchEvent(
+const type = (text) => {
+  for (const c of text) {
+    byId("input").value = c;
+    byId("input").dispatchEvent(new dom.window.InputEvent("input", { bubbles: true }));
+  }
+};
+const press = (target, key, modifiers = {}) =>
+  target.dispatchEvent(
     new dom.window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...modifiers })
   );
-
-const wheel = (deltaY) =>
-  byId("surface").dispatchEvent(
-    new dom.window.WheelEvent("wheel", { deltaY, deltaMode: 0, bubbles: true })
-  );
+const key = (k, modifiers) => press(byId("input"), k, modifiers);
 
 let failures = 0;
 const check = (label, actual, expected) => {
@@ -65,59 +75,77 @@ const check = (label, actual, expected) => {
 };
 
 (async () => {
-  for (const ch of "hello") press(ch);
+  type("hello");
   await frame();
-  check("typing reaches the core", rendered(), "hello");
-  check("the status bar counts from 1", byId("position").textContent, "Ln 1, Col 6 · 1 lines · 5 chars");
-  check("unsaved changes are marked", byId("name").textContent, "untitled.txt •");
-  check("the caret sits on the character grid", byId("caret").style.transform, "translate(40px, 0px)");
+  check("typing through the hidden input reaches the core", rows(), "hello");
+  check("the input is emptied — it never holds the document", byId("input").value, "");
+  check("the status bar counts from 1", byId("position").textContent, "Ln 1, Col 6 · 1 lines · LF");
+  check("unsaved changes are marked", byId("name").textContent, "Untitled •");
+  check("the caret is placed by the core's measurements", byId("caret").style.transform, "translate(40px, 0px)");
 
-  press("ArrowLeft");
-  press("ArrowLeft");
-  press("Backspace");
+  key("ArrowLeft");
+  key("ArrowLeft");
+  key("Backspace");
   await frame();
-  check("arrows and backspace edit at the caret", rendered(), "helo");
+  check("arrows and Backspace edit at the caret", rows(), "helo");
 
-  press("z", { ctrlKey: true });
+  key("z", { ctrlKey: true });
   await frame();
-  check("Ctrl+Z undoes", rendered(), "hello");
-  press("z", { ctrlKey: true, shiftKey: true });
+  check("Ctrl+Z undoes", rows(), "hello");
+  key("z", { ctrlKey: true, shiftKey: true });
   await frame();
-  check("Ctrl+Shift+Z redoes", rendered(), "helo");
-  press("z", { metaKey: true });
+  check("Ctrl+Shift+Z redoes", rows(), "helo");
+  key("z", { metaKey: true });
   await frame();
-  check("⌘Z is the same shortcut", rendered(), "hello");
-  check("the undo button follows the history", byId("redo").disabled, false);
+  check("⌘Z is the same shortcut", rows(), "hello");
+  check(
+    "a toolbar button is enabled by the history",
+    document.querySelector('[data-command="edit.redo"]').hasAttribute("disabled"),
+    false
+  );
 
-  press("Escape");
-  const before = rendered();
-  press("t", { ctrlKey: true });
+  const before = rows();
+  key("t", { ctrlKey: true });
   await frame();
-  check("Escape and browser shortcuts are not typed", rendered(), before);
+  check("the browser's own shortcuts are left alone", rows(), before);
 
-  press("End"); // no such capability in the core: must be ignored, not inserted
-  press("Enter");
-  press("w");
+  key("End");
+  key("Enter");
+  type("w");
   await frame();
-  // The caret is still mid-word from the edits above, so Enter splits "hello" into
-  // "hel" and "lo". The viewport is one line tall here, which makes this a test of
-  // follow_cursor too: the view has to land on the new line, not stay on the first.
-  check("Enter splits the line at the caret and the view follows", rendered(), "wlo");
-  check("the status bar sees both lines", byId("position").textContent, "Ln 2, Col 2 · 2 lines · 7 chars");
+  // One row tall in jsdom, so this is also a test of follow_caret: the view has to land on the
+  // new line rather than stay on the first.
+  check("Enter splits the line and the view follows the caret", rows(), "w");
+  check("the status bar sees both lines", byId("position").textContent, "Ln 2, Col 2 · 2 lines · LF");
 
-  wheel(-100);
+  byId("page").dispatchEvent(new dom.window.WheelEvent("wheel", { deltaY: -3, deltaMode: 1, bubbles: true, cancelable: true }));
   await frame();
-  check("the wheel scrolls the core's offset back up", rendered(), "hel");
-  check("scrolling does not move the caret", byId("position").textContent, "Ln 2, Col 2 · 2 lines · 7 chars");
-  check("a caret outside the view is not drawn", byId("caret").style.display, "none");
+  check("the wheel scrolls the core's position", rows(), "hello");
+  check("scrolling leaves the caret where it was", byId("position").textContent, "Ln 2, Col 2 · 2 lines · LF");
+  check("a caret scrolled out of view is not drawn", byId("caret").style.display, "none");
 
-  // A resize repaints without touching the document — and must not trip over the
-  // status message it leaves in place.
-  const message = byId("message").textContent;
-  dom.window.dispatchEvent(new dom.window.Event("resize"));
+  key("k", { ctrlKey: true });
+  check("Ctrl+K opens the palette", byId("palette").hidden, false);
+  byId("palette-input").value = "select all";
+  byId("palette-input").dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  check("the palette ranks the core's commands", document.querySelector("#palette-list li .label").textContent, "Select All");
+  press(byId("palette-input"), "Enter");
   await frame();
-  check("a resize repaints and keeps the message", byId("message").textContent, message);
-  check("a resize leaves the document alone", rendered(), "hel");
+  check("and runs the one chosen", document.querySelectorAll("#rows .selection").length, 1);
+  check("the palette closes", byId("palette").hidden, true);
+
+  key("f", { ctrlKey: true });
+  check("Ctrl+F opens the find bar", byId("findbar").hidden, false);
+  byId("find-input").value = "ell";
+  press(byId("find-input"), "Enter");
+  await frame();
+  check("Enter finds and the status follows", byId("position").textContent, "Ln 1, Col 5 · 2 lines · LF");
+
+  dom.window.confirm = () => true;
+  document.querySelector('[data-command="file.new"]').click();
+  await frame();
+  check("New, after confirming, empties the document", rows(), "");
+  check("and it is clean", byId("name").textContent, "Untitled");
 
   console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
   process.exit(failures === 0 ? 0 : 1);

@@ -1,57 +1,77 @@
 <!DOCTYPE html>
+<!--
+SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+
+SPDX-License-Identifier: MIT
+-->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light dark" />
-    <title>Editor</title>
+    <title>Quill</title>
     <link rel="stylesheet" href="style.css" />
   </head>
 
   <body>
     <!--
-      The shell is Rust; this file only declares the elements it writes to. Nothing
-      here is editable: #text is rebuilt from the core's viewport on every repaint,
-      which is what keeps the browser from becoming a second source of truth.
+      The shell is Rust; this file only declares the elements it writes to. Nothing here is
+      editable: #rows is rebuilt from the core's view every frame, and #input is emptied on every
+      keystroke. Every button carries a command ID from the core's table (`quill commands`).
     -->
     <header class="toolbar">
-      <button id="open" type="button" title="Open a file (Ctrl/⌘ O)">Open</button>
-      <button id="save" type="button" title="Download the document (Ctrl/⌘ S)">Save</button>
-      <span class="toolbar-gap"></span>
-      <button id="undo" type="button" title="Undo (Ctrl/⌘ Z)" disabled>Undo</button>
-      <button id="redo" type="button" title="Redo (Ctrl/⌘ ⇧ Z)" disabled>Redo</button>
+      <button type="button" data-command="file.new">New</button>
+      <button type="button" data-command="file.open" title="Ctrl/⌘ O">Open…</button>
+      <button type="button" data-command="file.save" title="Ctrl/⌘ S — downloads the file">Save</button>
+      <span class="gap"></span>
+      <button type="button" data-command="edit.undo" title="Ctrl/⌘ Z" disabled>Undo</button>
+      <button type="button" data-command="edit.redo" title="Ctrl/⌘ ⇧ Z" disabled>Redo</button>
+      <button type="button" data-command="edit.find" title="Ctrl/⌘ F">Find</button>
+      <button type="button" id="palette-button" title="Every command — Ctrl/⌘ K">Commands</button>
     </header>
 
-    <main
-      id="surface"
-      class="surface"
-      tabindex="0"
-      role="textbox"
-      aria-multiline="true"
-      aria-label="Document"
-    >
-      <div id="lines" class="lines">
-        <div id="text"></div>
+    <div id="findbar" class="findbar" hidden>
+      <input id="find-input" type="search" placeholder="Find" aria-label="Find" />
+      <button type="button" data-command="edit.find-previous" title="Shift+Enter">Previous</button>
+      <button type="button" data-command="edit.find-next" title="Enter">Next</button>
+      <button type="button" id="find-close" aria-label="Close the find bar">✕</button>
+    </div>
+
+    <main class="surface">
+      <div id="gutter" class="gutter" aria-hidden="true"></div>
+      <div id="page" class="page" role="textbox" aria-multiline="true" aria-label="Document">
+        <div id="rows"></div>
         <div id="caret" class="caret"></div>
-        <!-- Measured, never read: its width is ten characters and its height one
-             line, which is everything the shell needs to place the caret. -->
-        <div id="probe" class="line probe" aria-hidden="true">0000000000</div>
+        <textarea
+          id="input"
+          class="input"
+          autocapitalize="off"
+          autocomplete="off"
+          autocorrect="off"
+          spellcheck="false"
+          aria-label="Type into the document"
+        ></textarea>
       </div>
     </main>
 
     <footer class="status">
-      <span id="name" class="name">untitled.txt</span>
+      <span id="name" class="name"></span>
       <span id="message" class="message"></span>
       <span id="position" class="position"></span>
     </footer>
 
+    <div id="palette" class="palette" hidden>
+      <input id="palette-input" type="text" placeholder="Type a command" aria-label="Command" />
+      <ul id="palette-list"></ul>
+    </div>
+
     <input id="file-input" type="file" accept="text/*,.txt,.md" hidden />
+    <canvas id="measure" width="1" height="1" hidden></canvas>
 
     <script type="module">
-      import init from "./editor_web.js";
+      import init from "./quill_web.js";
       init().catch((error) => {
-        document.getElementById("message").textContent =
-          "Could not start the editor: " + error;
+        document.getElementById("message").textContent = "Could not start: " + error;
       });
     </script>
   </body>

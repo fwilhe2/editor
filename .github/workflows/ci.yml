@@ -1,0 +1,124 @@
+# SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+
+name: ci
+
+# The checks tier: debug builds, every gate, every test that needs no system package. The
+# release builds and everything downstream of them are `artifacts.yml` (doc/ci.md).
+#
+# `push` is restricted to `main`. With `on: [push, pull_request]` every commit on a branch with a
+# pull request open ran everything twice, to the same conclusion; the pull request is the run that
+# matters on a branch, and `main` is covered by its own push.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A superseded pull-request run has no reason to finish. `main` is exempt: its runs are the record
+# that a commit on the default branch was green.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Every crate that compiles with no system package — named rather than `--workspace`, because
+  # `quill-gtk` needs GTK's development packages, which only `gtk.yml` installs.
+  CRATES: -p quill-core -p quill-cli -p quill-tui -p quill-web -p quill-win32 -p quill-mac
+
+jobs:
+  reuse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: fsfe/reuse-action@676e2d560c9a403aa252096d99fcab3e1132b0f5 # v6.0.0
+
+  fmt:
+    # Formatting compiles nothing, so this is the whole workspace, GTK shell included.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: cargo fmt --all --check
+
+  clippy:
+    # Warnings are errors: the only setting that keeps a lint list at zero.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # One cache for every job here that compiles the same tree in debug. Saved from
+          # `main` only: caches are per branch, and each branch keeping its own copy is how a
+          # repository fills its 10 GB and evicts the entries that were being hit.
+          shared-key: linux-debug
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo clippy --locked $CRATES --all-targets -- -D warnings
+
+  docs:
+    # The doc comments are the design record; a link in one that no longer resolves is a broken
+    # reference, not a cosmetic warning.
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: linux-debug
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo doc --no-deps --locked $CRATES
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: linux-debug
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # `--locked`: Cargo.lock is committed, and a build that quietly updates it is a build of
+      # something other than what the commit says.
+      - run: cargo build --locked $CRATES
+      # Includes the parity ratchet (cli/tests/parity.rs), the packaging ratchet
+      # (cli/tests/packaging.rs), examples/sample.sh end to end, and the portable halves of the
+      # Windows and macOS shells.
+      - run: cargo test --locked $CRATES
+
+  licences:
+    # Every dependency's licence against `deny.toml`'s allow-list, and every source a registry.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2.87.23
+        with:
+          tool: cargo-deny
+      - run: cargo deny --locked check licenses bans sources
+
+  bootstrap:
+    # The template's own promise, checked: `scripts/bootstrap.py` turns this repository into
+    # another application, and the result builds and passes its tests under its new name with
+    # no trace of the old one left (doc/bootstrap.md). A promise nothing runs is a promise that
+    # rots.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: linux-bootstrap
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Bootstrap a copy as "notes"
+        run: |
+          cp -r "$GITHUB_WORKSPACE" "$RUNNER_TEMP/notes"
+          cd "$RUNNER_TEMP/notes"
+          scripts/bootstrap.py notes --app-id org.example.Notes
+      - name: The copy builds, passes, and has forgotten its old name
+        working-directory: ${{ runner.temp }}/notes
+        run: |
+          cargo test -p notes-core -p notes-cli -p notes-tui -p notes-web -p notes-win32 -p notes-mac
+          scripts/bootstrap.py --check quill

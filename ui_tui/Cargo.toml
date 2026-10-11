@@ -1,15 +1,31 @@
+# SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+
 [package]
-name = "editor-tui"
+name = "quill-tui"
+description = "The editor in a terminal"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Terminal UI shell over the editor core"
+repository.workspace = true
+publish.workspace = true
 
 [[bin]]
-name = "edit-tui"
+name = "quill-tui"
 path = "src/main.rs"
 
 [dependencies]
-editor-core.workspace = true
-# crossterm is used through `ratatui::crossterm`, so the two can never drift apart.
+quill-core.workspace = true
+# crossterm is reached as `ratatui::crossterm`, so the two can never drift apart.
 ratatui.workspace = true
+unicode-width.workspace = true
+
+[package.metadata.deb]
+name = "quill-tui"
+section = "editors"
+assets = [["target/release/quill-tui", "usr/bin/", "755"]]
+
+[package.metadata.generate-rpm]
+name = "quill-tui"
+assets = [{ source = "target/release/quill-tui", dest = "/usr/bin/quill-tui", mode = "755" }]

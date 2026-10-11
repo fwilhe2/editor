@@ -1,23 +1,25 @@
-# editor
+<!--
+SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
 
-A prototype of the **Shared Core, Native Shell** architecture: one Rust library holds all the
-editing logic, and seven front-ends render it — a CLI, a terminal UI, a GTK4/GNOME app, a Win32 app,
-a SwiftUI app, a browser app compiled to WebAssembly, and a portable GUI that is native to nothing.
+SPDX-License-Identifier: MIT
+-->
 
-It is a text editor only incidentally. The feature set is deliberately tiny — insert, backspace,
-cursor movement, undo/redo, save — because the point is not the editor. The point is that one core
-drives seven very different UIs across three operating systems and the web, one of them across an
-FFI boundary, without any of them owning a byte of document state.
+# editor — a template for shared-core, native-shell applications
 
-**This is a work in progress.** The argument below is the reason it exists.
+One Rust core holds every rule and every piece of state; six front-ends draw it, each in its
+platform's own idiom: a **CLI**, a **terminal** UI, a **GNOME** window (GTK 4 + libadwaita), a
+**Windows** window (Win32 + GDI), a **macOS** window (AppKit + CoreText) and a **browser** page
+(WebAssembly). All six are Rust; none of them owns a byte of the document.
 
-[![core + cli + ffi](https://github.com/fwilhe2/editor/actions/workflows/core-cli.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/core-cli.yml)
-[![ui_tui](https://github.com/fwilhe2/editor/actions/workflows/tui.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/tui.yml)
-[![ui_linux](https://github.com/fwilhe2/editor/actions/workflows/linux.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/linux.yml)
-[![ui_win32](https://github.com/fwilhe2/editor/actions/workflows/win32.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/win32.yml)
-[![ui_mac](https://github.com/fwilhe2/editor/actions/workflows/macos.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/macos.yml)
-[![ui_web](https://github.com/fwilhe2/editor/actions/workflows/web.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/web.yml)
-[![ui_egui](https://github.com/fwilhe2/editor/actions/workflows/egui.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/egui.yml)
+The application is **Quill**, a plain text editor — small, but not a toy: soft wrapping decided in
+the core, selection, a clipboard per platform, find, word-wise undo, files saved back byte for byte
+with their BOM and line endings. It is here to be replaced. This repository is first of all a
+**template**: the method, the checks that hold it, the CI that builds and packages for three
+operating systems and the web, and the instructions for an agent to turn it into your application.
+
+[![ci](https://github.com/fwilhe2/editor/actions/workflows/ci.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/ci.yml)
+[![shells](https://github.com/fwilhe2/editor/actions/workflows/shells.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/shells.yml)
+[![artifacts](https://github.com/fwilhe2/editor/actions/workflows/artifacts.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/artifacts.yml)
 
 ## Why
 
@@ -50,297 +52,118 @@ This repository exists to make that point concretely, with a real core, real bin
 three operating systems — rather than as an argument. The editor is trivial on purpose; the shells
 are the deliverable.
 
+## Start an application from it
+
+Hand an agent this repository and say what you want to build. The instructions are in
+[`doc/bootstrap.md`](doc/bootstrap.md) (and, for Claude Code, the `bootstrap` skill). The
+mechanical part is one command:
+
+```sh
+scripts/bootstrap.py notes --name Notes --app-id io.github.you.Notes --repo https://github.com/you/notes
+scripts/bootstrap.py --check quill    # proves no trace of the template's name is left
+```
+
+CI runs exactly that on every push, and builds and tests the result, so the template cannot
+quietly stop being one.
+
 ## How it fits together
 
 ```
-                        ┌───────────────────────────┐
-                        │        editor-core        │
-                        │ rope · cursor · undo/redo │
-                        │ the only source of truth  │
-                        └─────────────┬─────────────┘
-                                      │
-        ┌─────────────────────────────┼───────────────────────┐
-        │                             │                       │
-Cargo dependency                wasm-bindgen               UniFFI
- (no FFI at all)          (a Cargo dependency too)      (editor-ffi)
-        │                             │                       │
- edit       CLI                  editor-web           EditorApp (Swift)
- edit-tui   terminal             wasm · DOM           SwiftUI · macOS
- edit-gtk   GTK4 / GNOME
- edit-win32 Win32 · Windows
- edit-egui  portable
- ui_qt      planned
+                         core/  — every rule, every piece of state, no UI
+                                          │
+      ┌───────────┬──────────┬────────────┼────────────┬────────────┬────────────┐
+     cli/      ui_tui/    ui_gtk/      ui_web/     ui_win32/     ui_mac/
+   quill     quill-tui   quill-gtk    quill-web    quill-win32   quill-mac
+   scripts   ratatui     GTK 4 +      wasm-bindgen Win32 + GDI   AppKit + CoreText
+                         libadwaita   + the DOM    (windows-rs)  (objc2)
 ```
 
-Three classes of shell, and the difference matters:
+The rules the design leans on — [`doc/architecture.md`](doc/architecture.md) has them in full:
 
-- **Rust shells** — the CLI, TUI, GTK app, Win32 app and the egui one — depend on `editor-core` as
-  an ordinary Cargo dependency and call its public API directly. No bindings, no translation layer.
-- **Foreign shells** — SwiftUI, and since the C# app was replaced only SwiftUI — go through
-  `editor-ffi`, a thin UniFFI facade that generates Swift bindings. The annotations live in their
-  own crate so the core's Rust API stays idiomatic (`impl AsRef<Path>`, `PathBuf`, `char`) instead
-  of being flattened into strings for the benefit of foreign callers.
-- **The browser shell** — Rust again, compiled to `wasm32-unknown-unknown` and bound to the page
-  with `wasm-bindgen`. UniFFI has no JavaScript target, and would be beside the point when the shell
-  is Rust: `editor-ffi` is not involved at all.
+- **The core pushes; shells never poll.** An observer per shell, coalesced into one repaint.
+- **Reads are windowed.** `App::view(frame)` returns only the rows that fit.
+- **Undo lives in the core**, and an edit's inverse falls out of the data.
+- **Layout lives in the core.** Up, Down, Home and End mean rows on screen, so the core wraps; a
+  shell supplies only how wide a string is in its own unit, measured with the engine it draws with.
+- **Whatever any window can do, the CLI can do** — enforced by a test that reads the core's API.
+- **Verbs are data**: one table of commands; every shell's menus are tested against it.
+- **Saving never makes a file worse**: an untouched save returns the bytes that were read.
+- **Shells diverge**: a menu bar on Windows, a header bar on GNOME, the application menu and
+  standard selectors on a Mac, a command palette in the browser.
 
-Rules the whole design leans on:
-
-- The text is a **rope**, and `get_viewport(start, end)` is the **only** way a shell reads it. No UI
-  ever holds the whole document.
-- **Undo/redo lives in the core** as a command pattern, so every shell gets identical history.
-- The core **pushes** changes out through an observer trait; shells never poll. In Swift it is a
-  UniFFI foreign trait; in the Win32 shell it is a posted window message; in the browser, a flag and
-  a `requestAnimationFrame`.
-- **Feature parity is a hard rule**: anything reachable from any GUI must also be reachable from the
-  CLI. A UI-only feature is a bug.
-
-## Layout
-
-| Path | What it is |
-|------|-----------|
-| `core/` | `editor-core` — the logic. Rope, cursor, viewport, undo history |
-| `cli/` | `edit` — scriptable front-end, and the thing that keeps parity honest |
-| `ffi/` | `editor-ffi` — UniFFI facade for the Swift shell |
-| `ui_tui/` | `edit-tui` — terminal UI (ratatui + crossterm) |
-| `ui_linux/` | `edit-gtk` — GTK4 + libadwaita, following the GNOME HIG |
-| `ui_win32/` | `edit-win32` — Win32 + GDI, depending on nothing Windows does not ship |
-| `ui_mac/` | SwiftUI app, following Apple's HIG, plus a Swift smoke test |
-| `ui_web/` | `editor-web` — WebAssembly app rendered into the DOM, plus a jsdom smoke test |
-| `ui_egui/` | `edit-egui` — portable GUI on egui/eframe, native to nothing, and the only one with headless behaviour tests |
+| Path | What it is | Doc |
+|---|---|---|
+| `core/` | `quill-core` — document, history, layout, view, commands, `App` | [architecture](doc/architecture.md) |
+| `cli/` | `quill` — every capability, scriptable; the parity and packaging ratchets | [parity](doc/cli-parity.md) |
+| `ui_tui/` | `quill-tui` — ratatui; nano's conventions, Ctrl+P palette | [tui](doc/shells/tui.md) |
+| `ui_gtk/` | `quill-gtk` — GTK 4 + libadwaita; the GNOME HIG | [gtk](doc/shells/gtk.md) |
+| `ui_web/` | `quill-web` — wasm in a page; toolbar + Ctrl+K | [web](doc/shells/web.md) |
+| `ui_win32/` | `quill-win32` — Win32 + GDI; an `.exe` needing nothing Windows lacks | [win32](doc/shells/win32.md) |
+| `ui_mac/` | `quill-mac` — AppKit + CoreText via objc2; `Quill.app` | [mac](doc/shells/mac.md) |
+| `examples/sample.sh` | a document built from every capability, through the CLI | |
+| `scripts/` | `check.sh` (every local gate), `run.sh` (see a shell), `bootstrap.py` | |
+| `doc/decisions/` | why Win32, why AppKit from Rust, why a template | |
 
 ## Building
 
-**Cross-compilation is not supported anywhere in this project, by design.** Each app is built on the
-OS it runs on, and CI does the same on Linux, Windows and macOS runners.
-
-Everything needs a Rust toolchain. There is no minimum version to respect: the project builds on
-current stable, which is what CI tests.
-
-### CLI and TUI — Linux, macOS, Windows
-
-Pure Rust, no system dependencies:
+A Rust toolchain (current stable) is enough for the core, the CLI, the terminal shell and the
+portable halves of the Windows and macOS shells:
 
 ```sh
-cargo build --release -p editor-cli -p editor-tui
-
-./target/release/edit --help
-./target/release/edit-tui somefile.txt
+cargo test                                   # everything that needs no system package
+cargo run -p quill-cli -- --help
+cargo run -p quill-tui -- notes.txt
+scripts/check.sh                             # every gate CI has that this machine can run
 ```
 
-### Every platform — egui
+| Shell | Needs | Run |
+|---|---|---|
+| GNOME | `libgtk-4-dev libadwaita-1-dev` (or `gtk4-devel libadwaita-devel`) | `cargo run -p quill-gtk -- notes.txt` |
+| browser | `wasm32-unknown-unknown`, `wasm-bindgen-cli` at `Cargo.lock`'s version | `scripts/run.sh web` |
+| Windows | Windows and MSVC build tools — or, to look, `cargo-xwin` + Wine | `cargo run -p quill-win32 -- notes.txt` / `scripts/run.sh win32` |
+| macOS | a Mac with the Xcode command-line tools | `cargo run -p quill-mac -- notes.txt` |
 
-Also pure Rust, and the only GUI with no system dependencies on any platform: Linux, macOS and
-Windows all build it with nothing but a Rust toolchain.
+The Windows and macOS shells **type-check, lint and test their portable halves on any machine**,
+because checking never links:
 
 ```sh
-cargo run --release -p editor-egui -- somefile.txt
+rustup target add x86_64-pc-windows-msvc aarch64-apple-darwin
+cargo clippy -p quill-win32 --target x86_64-pc-windows-msvc --all-targets
+cargo clippy -p quill-mac   --target aarch64-apple-darwin  --all-targets
 ```
 
-It edits: arrows move, typing inserts, Ctrl/⌘+Z and +Y undo and redo, +S saves, +Q quits (twice if
-there are unsaved changes), the wheel scrolls and a click places the caret.
+Every GUI shell can draw a frame with no window: `quill-gtk notes.txt --render-to frame.png`. CI
+draws each one twice and requires the bytes to match.
 
-It is also the one GUI here whose behaviour is *tested* rather than merely compiled — 33 tests that
-drive the real shell, headlessly, with no display and no GPU:
+## The CLI
+
+Everything a window can do, from a script. 1-based lines and columns; `--format json` for agents;
+`--session FILE` to keep the caret, selection and undo history between invocations:
 
 ```sh
-cargo test -p editor-egui       # needs no window, and passes without one
+quill new notes.txt
+quill --session s.json type notes.txt --text 'hello world'
+quill --session s.json undo notes.txt               # removes " world" — undo goes a word at a time
+quill view notes.txt --width 20                     # the rows a 20-column window would draw
+quill --session s.json move notes.txt down --width 20
+quill --format json info notes.txt
+quill commands                                      # the verbs every window's menus are built from
 ```
 
-Those run on all three OS runners in CI, which is why this is the first GUI in the repository whose
-badge above means more than "it still compiles".
+## CI
 
-### Linux GUI — GTK4 + libadwaita
+Two tiers, and one release build per platform with everything about it as later steps of the same
+job: debug checks in `ci.yml` and `shells.yml` (including the Windows and macOS shells checked from
+Linux, and the bootstrap tested), and `artifacts.yml` for the `.deb`/`.rpm` packages, the Windows
+`.exe` with its import table read back, a universal signed `Quill.app` in a DMG, and the web bundle —
+each with its frames rendered twice and compared. [`doc/ci.md`](doc/ci.md).
 
-```sh
-sudo apt install libgtk-4-dev libadwaita-1-dev     # Debian/Ubuntu
-# sudo dnf install gtk4-devel libadwaita-devel     # Fedora
+## Status
 
-cargo run --release -p editor-gtk -- somefile.txt
-```
-
-### Windows — Win32
-
-Needs rustup with the MSVC toolchain, and Visual Studio Build Tools for the linker. That is the
-whole list — no .NET, no Windows App SDK, no bindings to generate:
-
-```powershell
-cargo build --release -p editor-win32
-target\release\edit-win32.exe somefile.txt
-```
-
-The resulting executable **depends on nothing Windows does not already ship**. It links `user32`,
-`gdi32`, `dwmapi` and `advapi32`, and `.cargo/config.toml` links the MSVC C runtime statically so
-there is no Visual C++ redistributable to install either. CI reads the import table back and fails
-if anything else appears.
-
-This shell used to be a WinUI 3 application in C#; [`doc/decision-win32-shell.md`](doc/decision-win32-shell.md)
-records why it was replaced and what that cost — chiefly the project's only C# binding.
-
-> Its Windows-only source can be **type-checked without Windows**, because `cargo check` never
-> links. On any machine: `rustup target add x86_64-pc-windows-msvc && cargo check -p editor-win32
-> --target x86_64-pc-windows-msvc`. This is a checking convenience, not cross-compilation — the
-> `.exe` is still built on Windows.
-
-### macOS — SwiftUI
-
-Needs Xcode 15 or newer (Swift 5.9+) and macOS 14+:
-
-```sh
-cargo build --release -p editor-ffi
-./ui_mac/generate-bindings.sh release
-
-swift build --package-path ui_mac --product EditorApp -c release \
-  -Xlinker "$PWD/target/release/libeditor_ffi.a"
-```
-
-It is a Swift package rather than an `.xcodeproj`, so Xcode can open `ui_mac/` directly. The app
-links the Rust **static** library, so the bundle has nothing to locate at runtime. CI wraps the
-resulting executable in an `Editor.app` using `ui_mac/Info.plist`.
-
-### Browser — WebAssembly
-
-The one shell that is not tied to an operating system, and the one that needs two build steps:
-rustc produces the `.wasm`, and the `wasm-bindgen` CLI writes the JavaScript that loads it.
-
-```sh
-rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version "$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock \
-  | sed -n 's/^version = "\(.*\)"/\1/p' | head -n1)"
-
-./ui_web/build.sh release
-python3 -m http.server --directory ui_web/dist 8000
-```
-
-> The CLI's version must equal the `wasm-bindgen` crate's, or the glue will not match the module.
-> Unlike the `uniffi-bindgen-cs` pin this replaced — deleted along with the C# shell — `build.sh`
-> reads the version out of `Cargo.lock` and refuses to run on a mismatch, so there is nothing to
-> pin by hand.
-
-Serve it; do not open `ui_web/dist/index.html` from disk, because browsers refuse to load ES modules
-and `.wasm` over `file://`. There is no server component — the output is four static files.
-
-## Using the CLI
-
-The CLI exists so that everything the GUIs can do is also scriptable — useful for agents, shells and
-CI. It is non-interactive: stdout is parseable, diagnostics go to stderr, failures exit non-zero.
-**Lines and columns are 1-based**, and column 1 is before the first character.
-
-```sh
-edit new notes.txt
-edit insert notes.txt --text 'hello' --line 1 --col 1
-edit view notes.txt
-edit --format json info notes.txt
-```
-
-`export` and `import` are the whole document rather than a range of lines — the scriptable half of
-what the browser shell does when it opens a file and saves it back into a download:
-
-```sh
-edit export notes.txt > backup.txt        # byte for byte, unlike `view`
-edit import notes.txt --text - < backup.txt
-```
-
-Each invocation loads the file, applies one command and writes it back. Because the process is
-stateless and the editor is not, cursor position and undo history survive only via a session file:
-
-```sh
-edit --session .notes.session insert notes.txt --text 'x'
-edit --session .notes.session undo notes.txt
-```
-
-Without `--session`, `undo` and `redo` fail loudly rather than silently doing nothing.
-
-## Tests
-
-```sh
-cargo test --workspace     # needs the GTK dev packages on Linux for ui_linux
-```
-
-The boundaries to other languages and to the browser are covered by smoke tests that are
-deliberately UI-free, so they run on any OS — including the one that cannot build the shell they
-belong to:
-
-```sh
-# Swift
-swift build --package-path ui_mac --product FfiSmoke \
-  -Xlinker "$PWD/target/release/libeditor_ffi.a"
-./ui_mac/.build/debug/FfiSmoke
-
-# Browser: the real wasm module driven against the real page in jsdom, no browser
-./ui_web/smoke.sh release
-```
-
-Both run before their app build in CI, so a failure tells you immediately whether the bug is in the
-bindings or in the UI code. The Win32 shell needs no such harness: it has no boundary, and its
-windowless modules are tested directly with `cargo test -p editor-win32` on any host.
-
-The egui shell goes further: its tests drive the real app, not a boundary beside it. They run the
-whole egui pass — the same layout and text shaping the window uses — feed it synthetic keys, clicks
-and wheel events, and read back the accessibility tree, all with no display and no GPU:
-
-```sh
-env -u DISPLAY -u WAYLAND_DISPLAY cargo test -p editor-egui
-```
-
-They stop before rasterising, so they prove behaviour and prove nothing about pixels. That is the
-same caveat jsdom carries, and it points the same way: after a change to how a UI *looks*, open it.
-
-## Status and limits
-
-This is a prototype, and it is honest about being one. Known gaps:
-
-- No horizontal scrolling in the TUI; no mouse-wheel scrolling in the SwiftUI shell (the browser,
-  egui and Win32 ones do have it).
-- The Win32 shell has a plain menu bar rather than Fluent controls, no Mica, and no accessibility
-  beyond the system caret — the deliberate price of an executable with no runtime dependencies.
-- The browser shell has no IME composition, no touch keyboard on mobile, and no scrollbar. A page
-  also cannot write back to the file it opened — saving is a download, which is the platform's rule.
-- The egui shell has no scrollbar, no file dialog and no IME; its path comes from `argv`, like the
-  terminal and GTK ones.
-- Line endings are assumed to be LF.
-- No search, selection, clipboard, multiple documents or syntax highlighting.
-
-One more shell is on the way:
-
-- **Qt** (`ui_qt/`) — planned: a second desktop toolkit, and the KDE/Plasma conventions that come
-  with it. Likely via [`cxx-qt`](https://github.com/KDAB/cxx-qt), which would keep it a plain Rust
-  crate depending on the core directly, like the GTK and terminal shells. See `CLAUDE.md` for the
-  trade-off against a C++ Qt app, which would need a fourth binding mechanism. Note that egui does
-  not replace it and the two have opposite purposes: Qt exists to reach a *second* set of native
-  conventions, egui to reach none of them.
-
-The two shells that came off that list most recently are finished, and each stretched the
-architecture in a different direction.
-
-The **browser shell** (`ui_web/`) is the honest test of the argument above — the web is one more
-platform with conventions of its own, not an excuse to stop having any — and it proved the two
-boundaries that mattered: `get_viewport` survives a DOM renderer unchanged, and the core's file API
-grew a filesystem-free half (`load_text` / `save_to_string`) that the CLI exposes as
-`import` / `export`, because a capability in one shell alone is a bug.
-
-The **egui shell** (`ui_egui/`) is the one that is **deliberately not native**. It looks and behaves
-the same everywhere, which is exactly the compromise the argument above is against; it was built
-anyway, for two things no native shell here can offer. It needs no system dependencies on any
-platform — a Rust toolchain is the whole list — and its behaviour is *tested* rather than merely
-compiled, headlessly, with no display and no GPU. That makes it the first GUI in this repository
-that CI runs, and the first an agent can verify without a human looking at a screen. It cost the core
-nothing: no new capability, no new API, and therefore no new CLI subcommand — the seventh shell was a
-transcription of the first six.
-
-It is also the control group the argument above was missing. Having one portable shell built from the
-same core in the same style is what makes "native feels different" a claim you can check rather than
-assert — run `edit-egui` and `edit-gtk` side by side and the difference is the argument. What it does
-not do is weaken it: the tests prove behaviour, never appearance, and behaviour is not the part
-platform conventions are about. See [`doc/decision-egui-shell.md`](doc/decision-egui-shell.md) for
-why that trade is worth making and [`doc/plan-egui-shell.md`](doc/plan-egui-shell.md) for how it was
-built.
-
-`CLAUDE.md` documents the architecture in more depth, including the invariants worth preserving and
-the traps each shell hides. [`doc/shared-core-native-shell.md`](doc/shared-core-native-shell.md)
-generalises it into a guide for building an app this way from scratch — the rules that carry the
-weight, the order to build in, and how to verify each shell from a Linux or macOS host.
+Known gaps are listed per shell in `doc/shells/`. The largest: **the macOS shell has been
+type-checked, linted and run in CI but not yet used interactively** on a Mac; no shell holds an input
+method's inline composition; GDI does not shape complex scripts.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). REUSE-compliant: every file says who wrote it and under what terms.

@@ -1,402 +1,268 @@
-//! End-to-end tests for the `edit` binary.
-//!
-//! These cover the contract scripts and agents depend on: text is written before the
-//! process exits, `--session` carries cursor and history across invocations, stdout
-//! stays parseable, and failures exit non-zero.
+// SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+//
+// SPDX-License-Identifier: MIT
+
+//! The CLI end to end: the real binary, real files, real output.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-struct Sandbox {
-    dir: PathBuf,
-}
+const BIN: &str = env!("CARGO_BIN_EXE_quill");
 
-impl Sandbox {
-    fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("editor-cli-{}-{name}", std::process::id()));
+/// A scratch directory per test, removed when the test ends.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Scratch {
+        let dir = std::env::temp_dir().join(format!("quill-cli-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        Sandbox { dir }
-    }
-
-    fn file(&self, name: &str, contents: &str) -> PathBuf {
-        let path = self.dir.join(name);
-        std::fs::write(&path, contents).unwrap();
-        path
+        Scratch(dir)
     }
 
     fn path(&self, name: &str) -> PathBuf {
-        self.dir.join(name)
+        self.0.join(name)
     }
 }
 
-impl Drop for Sandbox {
+impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
-fn edit(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_edit"))
-        .args(args)
-        .output()
-        .expect("the edit binary runs")
+fn run(args: &[&str]) -> Output {
+    Command::new(BIN).args(args).output().unwrap()
 }
 
+/// Run and insist on success; return stdout.
 fn ok(args: &[&str]) -> String {
-    let output = edit(args);
+    let out = run(args);
     assert!(
-        output.status.success(),
-        "expected success from {args:?}, got {}\nstderr: {}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
+        out.status.success(),
+        "quill {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
-    String::from_utf8(output.stdout).unwrap()
+    String::from_utf8(out.stdout).unwrap()
 }
 
 fn json(args: &[&str]) -> serde_json::Value {
-    serde_json::from_str(&ok(args)).expect("stdout is a single JSON object")
+    let mut all = vec!["--format", "json"];
+    all.extend_from_slice(args);
+    serde_json::from_str(&ok(&all)).unwrap()
 }
 
-fn contents(path: &Path) -> String {
-    std::fs::read_to_string(path).unwrap()
-}
-
-fn s(path: &Path) -> String {
-    path.display().to_string()
-}
-
-#[test]
-fn insert_writes_the_document_before_exiting() {
-    let sandbox = Sandbox::new("insert");
-    let file = sandbox.file("doc.txt", "hello\n");
-
-    ok(&[
-        "insert",
-        &s(&file),
-        "--text",
-        "brave ",
-        "--line",
-        "1",
-        "--col",
-        "1",
-    ]);
-    assert_eq!(contents(&file), "brave hello\n");
+fn s(path: &Path) -> &str {
+    path.to_str().unwrap()
 }
 
 #[test]
-fn addressing_is_one_based() {
-    let sandbox = Sandbox::new("one-based");
-    let file = sandbox.file("doc.txt", "ab\ncd\n");
-
-    // Line 2, column 2 is between 'c' and 'd'.
-    ok(&[
-        "insert",
-        &s(&file),
-        "--text",
-        "X",
-        "--line",
-        "2",
-        "--col",
-        "2",
-    ]);
-    assert_eq!(contents(&file), "ab\ncXd\n");
+fn typing_writes_the_file_and_reports_a_one_based_caret() {
+    let dir = Scratch::new("type");
+    let file = dir.path("a.txt");
+    ok(&["new", s(&file)]);
+    let state = json(&["type", s(&file), "--text", "hello"]);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello");
+    assert_eq!(state["caret"]["line"], 1);
+    assert_eq!(state["caret"]["column"], 6);
+    assert_eq!(state["written"], true);
 }
 
 #[test]
-fn view_prints_bare_lines_and_clamps_the_range() {
-    let sandbox = Sandbox::new("view");
-    let file = sandbox.file("doc.txt", "one\ntwo\nthree\n");
-
-    assert_eq!(
-        ok(&["view", &s(&file), "--start", "2", "--lines", "2"]),
-        "two\nthree\n"
-    );
-
-    let report = json(&["--format", "json", "view", &s(&file)]);
-    assert_eq!(report["start_line"], 1);
-    assert_eq!(report["total_lines"], 4); // trailing newline opens a final empty line
-    assert_eq!(report["lines"][0], "one");
-}
-
-#[test]
-fn a_session_carries_the_cursor_between_invocations() {
-    let sandbox = Sandbox::new("session-cursor");
-    let file = sandbox.file("doc.txt", "abc\n");
-    let session = sandbox.path("s.json");
-
+fn a_session_carries_history_and_typing_undoes_a_word_at_a_time() {
+    let dir = Scratch::new("session");
+    let (file, session) = (dir.path("a.txt"), dir.path("s.json"));
+    ok(&["new", s(&file)]);
     ok(&[
         "--session",
-        &s(&session),
-        "move",
-        &s(&file),
-        "right",
-        "--times",
-        "2",
-    ]);
-    let report = json(&[
-        "--format",
-        "json",
-        "--session",
-        &s(&session),
-        "info",
-        &s(&file),
-    ]);
-    assert_eq!(report["cursor"]["column"], 3);
-
-    ok(&[
-        "--session",
-        &s(&session),
-        "insert",
-        &s(&file),
+        s(&session),
+        "type",
+        s(&file),
         "--text",
-        "-X-",
+        "one two",
     ]);
-    assert_eq!(contents(&file), "ab-X-c\n");
-}
-
-#[test]
-fn undo_and_redo_travel_through_the_session() {
-    let sandbox = Sandbox::new("undo");
-    let file = sandbox.file("doc.txt", "base\n");
-    let session = sandbox.path("s.json");
-
-    let (session, doc) = (s(&session), s(&file));
-
-    ok(&[
-        "--session",
-        &session,
-        "insert",
-        &doc,
-        "--text",
-        "X",
-        "--line",
-        "1",
-        "--col",
-        "1",
-    ]);
-    assert_eq!(contents(&file), "Xbase\n");
-
-    ok(&["--session", &session, "undo", &doc]);
-    assert_eq!(contents(&file), "base\n");
-
-    ok(&["--session", &session, "redo", &doc]);
-    assert_eq!(contents(&file), "Xbase\n");
+    ok(&["--session", s(&session), "undo", s(&file)]);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "one");
+    ok(&["--session", s(&session), "redo", s(&file)]);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "one two");
 }
 
 #[test]
 fn undo_without_a_session_fails_loudly() {
-    let sandbox = Sandbox::new("undo-no-session");
-    let file = sandbox.file("doc.txt", "base\n");
-
-    let output = edit(&["undo", &s(&file)]);
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty(), "errors must not reach stdout");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("--session"));
+    let dir = Scratch::new("no-session");
+    let file = dir.path("a.txt");
+    ok(&["new", s(&file)]);
+    let out = run(&["undo", s(&file)]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--session"));
 }
 
 #[test]
-fn a_no_op_undo_reports_no_change_and_still_succeeds() {
-    let sandbox = Sandbox::new("undo-empty");
-    let file = sandbox.file("doc.txt", "base\n");
-    let session = sandbox.path("s.json");
+fn a_session_for_a_file_that_changed_is_ignored() {
+    let dir = Scratch::new("stale");
+    let (file, session) = (dir.path("a.txt"), dir.path("s.json"));
+    ok(&["new", s(&file)]);
+    ok(&["--session", s(&session), "type", s(&file), "--text", "abc"]);
+    std::fs::write(&file, "something else entirely").unwrap();
+    let out = run(&["--session", s(&session), "undo", s(&file)]);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("changed since"));
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "something else entirely",
+        "an undo recorded against other text must not be replayed"
+    );
+}
 
-    let report = json(&[
-        "--format",
-        "json",
+#[test]
+fn down_moves_by_rows_at_the_width_given() {
+    let dir = Scratch::new("down");
+    let file = dir.path("a.txt");
+    std::fs::write(&file, "hello world\nnext").unwrap();
+    let session = dir.path("s.json");
+    let s1 = json(&[
         "--session",
-        &s(&session),
-        "undo",
-        &s(&file),
+        s(&session),
+        "move",
+        s(&file),
+        "down",
+        "--width",
+        "6",
     ]);
-    assert_eq!(report["changed"], false);
-    assert_eq!(report["written"], false);
-    assert_eq!(contents(&file), "base\n");
+    assert_eq!(s1["caret"]["line"], 1, "the wrapped row of the same line");
+    assert_eq!(s1["caret"]["column"], 7);
+    let s2 = json(&["--session", s(&session), "move", s(&file), "down"]);
+    assert_eq!(
+        s2["caret"]["line"], 2,
+        "without --width the line is one row"
+    );
 }
 
 #[test]
-fn backspace_repeats_and_stops_at_the_document_start() {
-    let sandbox = Sandbox::new("backspace");
-    let file = sandbox.file("doc.txt", "abcdef");
-
-    ok(&[
-        "backspace",
-        &s(&file),
-        "--line",
-        "1",
-        "--col",
-        "4",
-        "--times",
-        "10",
-    ]);
-    assert_eq!(contents(&file), "def");
+fn view_with_a_width_prints_the_rows_a_window_would_draw() {
+    let dir = Scratch::new("view");
+    let file = dir.path("a.txt");
+    std::fs::write(&file, "hello world\nnext").unwrap();
+    assert_eq!(
+        ok(&["view", s(&file), "--width", "6"]),
+        "1  hello \n   world\n2  next\n"
+    );
+    assert_eq!(ok(&["view", s(&file), "--from", "2"]), "2  next\n");
 }
 
 #[test]
-fn dry_run_reports_the_result_without_touching_disk() {
-    let sandbox = Sandbox::new("dry-run");
-    let file = sandbox.file("doc.txt", "keep\n");
-    let session = sandbox.path("s.json");
-
-    let report = json(&[
-        "--format",
-        "json",
-        "--dry-run",
-        "--session",
-        &s(&session),
-        "insert",
-        &s(&file),
-        "--text",
-        "X",
-        "--line",
-        "1",
-        "--col",
-        "1",
-    ]);
-    assert_eq!(report["changed"], true);
-    assert_eq!(report["written"], false);
-    assert_eq!(contents(&file), "keep\n");
-    assert!(!session.exists(), "a dry run writes no session either");
+fn crlf_and_a_bom_survive_an_edit() {
+    let dir = Scratch::new("crlf");
+    let file = dir.path("a.txt");
+    std::fs::write(&file, b"\xEF\xBB\xBFone\r\ntwo\r\n").unwrap();
+    ok(&["insert", s(&file), "--text", "!", "--at", "1:4"]);
+    assert_eq!(
+        std::fs::read(&file).unwrap(),
+        b"\xEF\xBB\xBFone!\r\ntwo\r\n"
+    );
+    assert_eq!(json(&["info", s(&file)])["line_ending"], "CRLF");
 }
 
 #[test]
-fn text_can_come_from_stdin() {
-    let sandbox = Sandbox::new("stdin");
-    let file = sandbox.file("doc.txt", "");
+fn a_file_that_is_not_utf8_is_refused_and_left_alone() {
+    let dir = Scratch::new("latin1");
+    let file = dir.path("a.txt");
+    std::fs::write(&file, b"caf\xE9").unwrap();
+    let out = run(&["insert", s(&file), "--text", "x"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not UTF-8"));
+    assert_eq!(std::fs::read(&file).unwrap(), b"caf\xE9");
+}
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_edit"))
-        .args(["insert", &s(&file), "--text", "-"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    {
-        use std::io::Write;
-        child
-            .stdin
-            .as_mut()
-            .unwrap()
-            .write_all(b"piped in")
-            .unwrap();
+#[test]
+fn cut_prints_the_selection_and_removes_it() {
+    let dir = Scratch::new("cut");
+    let file = dir.path("a.txt");
+    std::fs::write(&file, "hello world").unwrap();
+    let session = dir.path("s.json");
+    ok(&["--session", s(&session), "select", s(&file), "1:6", "1:12"]);
+    assert_eq!(ok(&["--session", s(&session), "copy", s(&file)]), " world");
+    assert_eq!(ok(&["--session", s(&session), "cut", s(&file)]), " world");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello");
+}
+
+#[test]
+fn find_selects_the_match_and_find_next_repeats_it() {
+    let dir = Scratch::new("find");
+    let file = dir.path("a.txt");
+    std::fs::write(&file, "ab ab ab").unwrap();
+    let session = dir.path("s.json");
+    let first = json(&["--session", s(&session), "find", s(&file), "ab"]);
+    assert_eq!(first["selection"][0]["column"], 1);
+    let next = json(&["--session", s(&session), "find-next", s(&file)]);
+    assert_eq!(next["selection"][0]["column"], 4);
+    assert_eq!(next["search"], "ab");
+}
+
+#[test]
+fn export_and_import_are_the_bytes_save_would_write() {
+    let dir = Scratch::new("bytes");
+    let (file, source) = (dir.path("a.txt"), dir.path("b.txt"));
+    std::fs::write(&source, "from\r\nelsewhere\r\n").unwrap();
+    ok(&["new", s(&file)]);
+    ok(&["import", s(&file), s(&source)]);
+    assert_eq!(ok(&["export", s(&file)]), "from\r\nelsewhere\r\n");
+}
+
+#[test]
+fn commands_lists_every_menu_verb() {
+    let listed = ok(&["commands"]);
+    for command in quill_core::Command::ALL {
+        assert!(listed.contains(command.id()), "{} is missing", command.id());
     }
-    assert!(child.wait().unwrap().success());
-    assert_eq!(contents(&file), "piped in");
 }
 
+/// `examples/sample.sh` uses every capability; running it here is how a capability with no
+/// line in it is noticed (and how the script is kept from rotting).
 #[test]
-fn new_creates_a_file_and_refuses_to_clobber_one() {
-    let sandbox = Sandbox::new("new");
-    let file = sandbox.path("fresh.txt");
-
-    ok(&["new", &s(&file)]);
-    assert_eq!(contents(&file), "");
-
-    std::fs::write(&file, "precious").unwrap();
-    let output = edit(&["new", &s(&file)]);
-    assert!(!output.status.success());
-    assert_eq!(contents(&file), "precious");
-
-    ok(&["new", &s(&file), "--force"]);
-    assert_eq!(contents(&file), "");
-}
-
-#[test]
-fn export_reproduces_the_document_byte_for_byte() {
-    let sandbox = Sandbox::new("export");
-    // No trailing newline, and a blank line in the middle: `view` would normalise
-    // both away, `export` must not.
-    let file = sandbox.file("doc.txt", "one\n\nthree");
-
-    assert_eq!(ok(&["export", &s(&file)]), "one\n\nthree");
-
-    let report = json(&["--format", "json", "export", &s(&file)]);
-    assert_eq!(report["text"], "one\n\nthree");
-}
-
-#[test]
-fn import_replaces_the_document_and_drops_its_history() {
-    let sandbox = Sandbox::new("import");
-    let file = sandbox.file("doc.txt", "old\n");
-    let session = sandbox.path("s.json");
-
-    ok(&[
-        "--session",
-        &s(&session),
-        "insert",
-        &s(&file),
-        "--text",
-        "X",
-    ]);
-    assert_eq!(contents(&file), "Xold\n");
-
-    let report = json(&[
-        "--format",
-        "json",
-        "--session",
-        &s(&session),
-        "import",
-        &s(&file),
-        "--text",
-        "brand new\n",
-    ]);
-    assert_eq!(report["changed"], true);
-    assert_eq!(report["written"], true);
-    assert_eq!(contents(&file), "brand new\n");
-
-    // The history belonged to the document that was replaced, so it is gone —
-    // undoing into it would resurrect text this file never had.
-    assert_eq!(report["can_undo"], false);
-    let undone = json(&[
-        "--format",
-        "json",
-        "--session",
-        &s(&session),
-        "undo",
-        &s(&file),
-    ]);
-    assert_eq!(undone["changed"], false);
-    assert_eq!(contents(&file), "brand new\n");
-}
-
-#[test]
-fn importing_identical_text_writes_nothing() {
-    let sandbox = Sandbox::new("import-same");
-    let file = sandbox.file("doc.txt", "same\n");
-
-    let report = json(&["--format", "json", "import", &s(&file), "--text", "same\n"]);
-    assert_eq!(report["changed"], false);
-    assert_eq!(report["written"], false);
-}
-
-#[test]
-fn import_and_export_round_trip_through_a_pipe() {
-    let sandbox = Sandbox::new("round-trip");
-    let source = sandbox.file("source.txt", "alpha\nbeta");
-    let target = sandbox.file("target.txt", "");
-
-    let exported = ok(&["export", &s(&source)]);
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_edit"))
-        .args(["import", &s(&target), "--text", "-"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
+fn the_sample_script_runs() {
+    let dir = Scratch::new("sample");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let out = Command::new("bash")
+        .arg(root.join("examples/sample.sh"))
+        .arg(&dir.0)
+        .env("QUILL_BIN", BIN)
+        .output()
         .unwrap();
-    {
-        use std::io::Write;
-        child
-            .stdin
-            .as_mut()
-            .unwrap()
-            .write_all(exported.as_bytes())
-            .unwrap();
-    }
-    assert!(child.wait().unwrap().success());
-    assert_eq!(contents(&target), "alpha\nbeta");
+    assert!(
+        out.status.success(),
+        "examples/sample.sh failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = std::fs::read_to_string(dir.path("sample.txt")).unwrap();
+    assert!(text.contains("Cut and pasted back: in a"), "{text}");
 }
 
+/// The script must call every subcommand at least once.
 #[test]
-fn a_missing_file_is_an_error_not_an_empty_document() {
-    let sandbox = Sandbox::new("missing");
-    let output = edit(&["view", &s(&sandbox.path("nope.txt"))]);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("nope.txt"));
+fn the_sample_script_reaches_every_subcommand() {
+    let script = include_str!("../../examples/sample.sh");
+    let help = ok(&["--help"]);
+    let commands = help
+        .split_once("Commands:")
+        .unwrap()
+        .1
+        .split_once("Options:")
+        .unwrap()
+        .0;
+    for line in commands.lines() {
+        let Some(name) = line.split_whitespace().next() else {
+            continue;
+        };
+        if name == "help" {
+            continue;
+        }
+        let used = script.contains(&format!("e {name} "))
+            || script.contains(&format!("\" {name} "))
+            || script.contains(&format!("e --format json {name} "))
+            || script.contains(&format!("e {name} >"));
+        assert!(
+            used,
+            "examples/sample.sh never runs `quill {name}` — add a line for it"
+        );
+    }
 }

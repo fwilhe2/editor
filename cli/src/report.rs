@@ -1,30 +1,55 @@
-//! What the CLI prints.
-//!
-//! Every command produces one report, rendered either as human text or as a single
-//! JSON object. Diagnostics never go to stdout — callers parse it.
+// SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+//
+// SPDX-License-Identifier: MIT
 
-use editor_core::{Editor, Position};
+//! What the CLI prints, and the one place 1-based meets 0-based.
+//!
+//! Every command produces one [`Report`], rendered as human text or as a single JSON object.
+//! Diagnostics never go to stdout: a caller parses it.
+
+use quill_core::{App, Position};
 use serde::Serialize;
 
-/// A 1-based cursor address. The CLI is 1-based end to end; the core is 0-based,
-/// and [`Cursor`] is the only place the two meet.
-#[derive(Clone, Copy, Debug, Serialize)]
-pub struct Cursor {
+/// A 1-based (line, column) address. **The CLI is 1-based end to end and the core is 0-based**,
+/// and this type is the only place the two meet — no other file adds or subtracts one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Place {
     pub line: u64,
     pub column: u64,
 }
 
-impl Cursor {
-    /// 1-based (line, column) from the caller into a core position.
-    pub fn to_core(line: u64, column: u64) -> Position {
-        Position::new(line.saturating_sub(1), column.saturating_sub(1))
+impl Place {
+    pub fn to_core(self) -> Position {
+        Position::new(self.line.saturating_sub(1), self.column.saturating_sub(1))
     }
 
     pub fn from_core(position: Position) -> Self {
-        Cursor {
+        Place {
             line: position.line + 1,
             column: position.column + 1,
         }
+    }
+
+    /// `LINE:COLUMN`, or a bare `LINE` meaning its first column.
+    pub fn parse(text: &str) -> Result<Place, String> {
+        let (line, column) = text.split_once(':').unwrap_or((text, "1"));
+        let number = |part: &str| {
+            part.trim()
+                .parse::<u64>()
+                .ok()
+                .filter(|&n| n > 0)
+                .ok_or_else(|| format!("{text:?} is not LINE:COLUMN (both start at 1)"))
+        };
+        Ok(Place {
+            line: number(line)?,
+            column: number(column)?,
+        })
+    }
+}
+
+impl std::fmt::Display for Place {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.line, self.column)
     }
 }
 
@@ -36,102 +61,160 @@ pub enum Format {
     Json,
 }
 
+/// Where the document is after a command — the report every command but the readers prints.
 #[derive(Debug, Serialize)]
-#[serde(untagged)]
-pub enum Report {
-    View(ViewReport),
-    Export(ExportReport),
-    Document(DocumentReport),
+pub struct State {
+    pub path: String,
+    /// What a window's title bar would call the document.
+    pub title: String,
+    /// False when the command was a no-op (nothing to undo, no match, Backspace at the start).
+    pub changed: bool,
+    /// Whether the file was written.
+    pub written: bool,
+    pub caret: Place,
+    pub selection: Option<[Place; 2]>,
+    pub lines: u64,
+    pub chars: u64,
+    pub line_ending: &'static str,
+    pub bom: bool,
+    pub can_undo: bool,
+    pub can_redo: bool,
+    /// Unsaved changes. Always false after a command that wrote the file.
+    pub dirty: bool,
+    /// The first row on screen: its line (1-based) and which of that line's wrapped rows
+    /// (1-based) it is.
+    pub scroll: [u64; 2],
+    /// The last query `find` was given, which `find-next` repeats.
+    pub search: Option<String>,
 }
 
-/// The result of a read.
-#[derive(Debug, Serialize)]
-pub struct ViewReport {
-    pub path: String,
-    pub start_line: u64,
-    pub lines: Vec<String>,
-    pub total_lines: u64,
-    pub cursor: Cursor,
+impl State {
+    pub fn of(app: &App, path: &str, changed: bool, written: bool) -> State {
+        let encoding = app.encoding();
+        State {
+            path: app
+                .path()
+                .map_or_else(|| path.to_string(), |p| p.display().to_string()),
+            title: app.title(),
+            changed,
+            written,
+            caret: Place::from_core(app.caret()),
+            selection: app
+                .selection()
+                .map(|(from, to)| [Place::from_core(from), Place::from_core(to)]),
+            lines: app.line_count(),
+            chars: app.char_count(),
+            line_ending: encoding.line_ending.as_str(),
+            bom: encoding.bom,
+            can_undo: app.can_undo(),
+            can_redo: app.can_redo(),
+            dirty: app.is_dirty(),
+            scroll: {
+                let scroll = app.scroll();
+                [scroll.line + 1, scroll.row + 1]
+            },
+            search: app.search(),
+        }
+    }
 }
 
-/// The whole document, byte for byte. Unlike [`ViewReport`] this is not a range of
-/// lines but the exact contents a save would write — the CLI's half of what the
-/// browser shell does when it saves into a download.
+/// One row as a shell would draw it.
 #[derive(Debug, Serialize)]
-pub struct ExportReport {
-    pub path: String,
+pub struct Row {
+    pub line: u64,
+    /// Whether it is the first row of its line — wrapped rows after it carry no line number.
+    pub first: bool,
     pub text: String,
 }
 
-/// The result of everything else: where the document ended up.
 #[derive(Debug, Serialize)]
-pub struct DocumentReport {
-    pub path: String,
-    /// False when the command was a no-op (nothing to undo, cursor already at the edge).
-    pub changed: bool,
-    /// Whether the document was written back to disk.
-    pub written: bool,
-    pub cursor: Cursor,
-    pub total_lines: u64,
-    pub chars: u64,
-    pub can_undo: bool,
-    pub can_redo: bool,
+#[serde(untagged)]
+pub enum Report {
+    State(State),
+    /// `view`: rows, numbered from 1.
+    Rows {
+        path: String,
+        rows: Vec<Row>,
+        caret: Place,
+        lines: u64,
+    },
+    /// `copy`, `cut`, `export`: text for stdout, printed verbatim in text form.
+    Text {
+        text: String,
+    },
+    /// `commands`.
+    Commands {
+        commands: Vec<CommandRow>,
+    },
 }
 
-impl DocumentReport {
-    pub fn new(editor: &Editor, changed: bool, written: bool) -> Self {
-        DocumentReport {
-            path: editor
-                .path()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
-            changed,
-            written,
-            cursor: Cursor::from_core(editor.cursor()),
-            total_lines: editor.line_count(),
-            chars: editor.char_count(),
-            can_undo: editor.can_undo(),
-            can_redo: editor.can_redo(),
-        }
-    }
+#[derive(Debug, Serialize)]
+pub struct CommandRow {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub summary: &'static str,
 }
 
 impl Report {
     pub fn print(&self, format: Format) {
-        match format {
-            Format::Json => {
-                println!(
-                    "{}",
-                    serde_json::to_string(self).expect("report is serializable")
-                )
-            }
-            Format::Text => self.print_text(),
+        if format == Format::Json {
+            println!(
+                "{}",
+                serde_json::to_string(self).expect("a report serialises")
+            );
+            return;
         }
-    }
-
-    fn print_text(&self) {
         match self {
-            // Bare lines, so `edit view` composes with grep, wc and friends.
-            Report::View(view) => {
-                for line in &view.lines {
-                    println!("{line}");
+            Report::State(state) => {
+                print!(
+                    "{}: {} lines, caret {}",
+                    state.path, state.lines, state.caret
+                );
+                if let Some([from, to]) = state.selection {
+                    print!(", selection {from}–{to}");
+                }
+                if !state.changed {
+                    print!(" (unchanged)");
+                }
+                println!();
+            }
+            Report::Rows { rows, .. } => {
+                let width = rows
+                    .iter()
+                    .map(|r| r.line)
+                    .max()
+                    .unwrap_or(1)
+                    .to_string()
+                    .len();
+                for row in rows {
+                    if row.first {
+                        println!("{:>width$}  {}", row.line, row.text);
+                    } else {
+                        println!("{:>width$}  {}", "", row.text);
+                    }
                 }
             }
-            // Exactly what is in the document, with nothing added: `edit export`
-            // redirected into a file must reproduce it byte for byte.
-            Report::Export(export) => print!("{}", export.text),
-            Report::Document(doc) => {
-                println!(
-                    "{}:{}:{}  {} lines, {} chars{}{}",
-                    doc.path,
-                    doc.cursor.line,
-                    doc.cursor.column,
-                    doc.total_lines,
-                    doc.chars,
-                    if doc.written { "" } else { "  (not written)" },
-                    if doc.changed { "" } else { "  (no change)" },
-                );
+            Report::Text { text } => print!("{text}"),
+            Report::Commands { commands } => {
+                for c in commands {
+                    println!("{:<20} {:<15} {}", c.id, c.label, c.summary);
+                }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn places_are_one_based_on_the_outside() {
+        let place = Place::parse("3:7").unwrap();
+        assert_eq!(place.to_core(), Position::new(2, 6));
+        assert_eq!(Place::from_core(Position::new(2, 6)), place);
+        assert_eq!(Place::parse("4").unwrap().to_core(), Position::new(3, 0));
+        assert!(Place::parse("0:1").is_err());
+        assert!(Place::parse("x").is_err());
     }
 }

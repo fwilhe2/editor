@@ -1,44 +1,19 @@
-//! Windows virtual-key codes and characters → core operations.
-//!
-//! Windows-free on purpose, like `ui_linux/src/keymap.rs`, `ui_web/src/keymap.rs`
-//! and `ui_egui/src/keymap.rs`. A virtual-key code is a `u16` and a modifier is a
-//! bool, so nothing here needs the `windows` crate — which is what lets the whole
-//! key table be tested on a Linux machine that cannot open a Windows window.
-//!
-//! The constants below are copied from `winuser.h` rather than imported, and
-//! [`tests::the_virtual_key_codes_match_the_windows_headers`] pins every one of them
-//! against the real thing when the crate is built for Windows. Copying a wrong
-//! number is the obvious failure mode of doing it this way, so it is the one thing
-//! CI checks first.
-//!
-//! # Shortcuts
-//!
-//! Microsoft's keyboard conventions, not GNOME's and not this project's other
-//! shells': **Ctrl+Y is redo**, with Ctrl+Shift+Z accepted because half the world
-//! arrived from elsewhere. There is deliberately **no Ctrl+Q** — quitting on
-//! Windows is the close button or Alt+F4, both of which arrive as `WM_CLOSE` and
-//! neither of which is this file's business.
+// SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+//
+// SPDX-License-Identifier: MIT
 
-use editor_core::{Direction, Editor};
+//! Keys and characters to actions, with no Windows types in sight — a virtual-key code is a
+//! `u16` here, so all of it compiles and is tested on Linux.
+//!
+//! Windows splits a keystroke in two: `WM_KEYDOWN` carries the key (an arrow, F3, Ctrl+S) and
+//! `WM_CHAR`, produced by `TranslateMessage`, carries the text it typed — in UTF-16 units, so a
+//! character outside the Basic Multilingual Plane arrives as two messages. [`action_for_key`]
+//! answers the first, [`Utf16`] and [`typed`] the second.
 
-/// Virtual-key codes, from `winuser.h`.
-///
-/// Stable since Windows 3.1 and part of the ABI, so copying them is safe in a way
-/// that copying most constants is not.
-mod vk {
-    pub const BACK: u16 = 0x08;
-    pub const TAB: u16 = 0x09;
-    pub const RETURN: u16 = 0x0D;
-    pub const LEFT: u16 = 0x25;
-    pub const UP: u16 = 0x26;
-    pub const RIGHT: u16 = 0x27;
-    pub const DOWN: u16 = 0x28;
-    pub const S: u16 = 0x53;
-    pub const Y: u16 = 0x59;
-    pub const Z: u16 = 0x5A;
-}
+use quill_core::{Command, Delete, Motion};
 
-/// Which modifiers were held, read from `GetKeyState` when the message arrived.
+use crate::menu;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Modifiers {
     pub ctrl: bool,
@@ -46,255 +21,189 @@ pub struct Modifiers {
     pub alt: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum UiAction {
-    /// Text to insert. A `String` rather than a `char` because a surrogate pair or
-    /// an IME commit can produce more than one `char`, and because every other shell
-    /// here carries it that way.
-    Insert(String),
-    Backspace,
-    Move(Direction),
-    Save,
-    Undo,
-    Redo,
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Action {
+    Command(Command),
+    Move(Motion, bool),
+    Delete(Delete),
+    Escape,
 }
 
-/// What the shell must do itself, because it needs the window rather than the core.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Request {
-    Save,
-}
+// The virtual-key codes used here, copied from `winuser.h`. A `cfg(windows)` test pins each one
+// to the `windows` crate's own value, on the Windows runner.
+pub const VK_BACK: u16 = 0x08;
+pub const VK_ESCAPE: u16 = 0x1B;
+pub const VK_PRIOR: u16 = 0x21;
+pub const VK_NEXT: u16 = 0x22;
+pub const VK_END: u16 = 0x23;
+pub const VK_HOME: u16 = 0x24;
+pub const VK_LEFT: u16 = 0x25;
+pub const VK_UP: u16 = 0x26;
+pub const VK_RIGHT: u16 = 0x27;
+pub const VK_DOWN: u16 = 0x28;
+pub const VK_DELETE: u16 = 0x2E;
 
-/// Map a `WM_KEYDOWN` to an action.
-///
-/// Enter, Tab and Backspace are claimed here rather than left to `WM_CHAR`, which
-/// would also deliver them as `\r`, `\t` and `\x08`. [`action_for_char`] drops those,
-/// so exactly one of the two paths acts on each — the alternative is every newline
-/// arriving twice.
-pub fn action_for_key(key: u16, modifiers: Modifiers) -> Option<UiAction> {
-    if modifiers.ctrl {
-        return match key {
-            vk::S => Some(UiAction::Save),
-            vk::Z if modifiers.shift => Some(UiAction::Redo),
-            vk::Z => Some(UiAction::Undo),
-            vk::Y => Some(UiAction::Redo),
-            _ => None,
-        };
+pub fn action_for_key(vk: u16, mods: Modifiers) -> Option<Action> {
+    if !mods.alt
+        && let Some(command) = menu::command_for(vk, mods.ctrl, mods.shift)
+    {
+        return Some(Action::Command(command));
     }
-
-    // Alt belongs to the menu bar and the window manager. Alt+F4 in particular must
-    // reach DefWindowProc, or this window could not be closed from the keyboard.
-    if modifiers.alt {
-        return None;
-    }
-
-    match key {
-        vk::LEFT => Some(UiAction::Move(Direction::Left)),
-        vk::RIGHT => Some(UiAction::Move(Direction::Right)),
-        vk::UP => Some(UiAction::Move(Direction::Up)),
-        vk::DOWN => Some(UiAction::Move(Direction::Down)),
-        vk::BACK => Some(UiAction::Backspace),
-        vk::RETURN => Some(UiAction::Insert("\n".to_string())),
-        vk::TAB => Some(UiAction::Insert("\t".to_string())),
+    let (ctrl, shift) = (mods.ctrl, mods.shift);
+    let motion = |m| Some(Action::Move(m, shift));
+    match vk {
+        VK_LEFT if ctrl => motion(Motion::WordLeft),
+        VK_RIGHT if ctrl => motion(Motion::WordRight),
+        VK_HOME if ctrl => motion(Motion::DocumentStart),
+        VK_END if ctrl => motion(Motion::DocumentEnd),
+        VK_LEFT => motion(Motion::Left),
+        VK_RIGHT => motion(Motion::Right),
+        VK_UP => motion(Motion::Up),
+        VK_DOWN => motion(Motion::Down),
+        VK_HOME => motion(Motion::RowStart),
+        VK_END => motion(Motion::RowEnd),
+        VK_PRIOR => motion(Motion::PageUp),
+        VK_NEXT => motion(Motion::PageDown),
+        VK_BACK if ctrl => Some(Action::Delete(Delete::WordBackward)),
+        VK_DELETE if ctrl => Some(Action::Delete(Delete::WordForward)),
+        // Backspace's character (0x08) also arrives as WM_CHAR, and `typed` drops it.
+        VK_BACK => Some(Action::Delete(Delete::Backward)),
+        VK_DELETE => Some(Action::Delete(Delete::Forward)),
+        VK_ESCAPE => Some(Action::Escape),
         _ => None,
     }
 }
 
-/// Map a `WM_CHAR` to an action.
-///
-/// Control characters are dropped, which does two jobs at once: it keeps Enter, Tab
-/// and Backspace to [`action_for_key`], and it stops Ctrl+S from typing an `0x13`
-/// into the document. The Ctrl check is belt and braces on top — that bug has
-/// appeared in three shells in this repository.
-pub fn action_for_char(ch: char, modifiers: Modifiers) -> Option<UiAction> {
-    if modifiers.ctrl || ch.is_control() {
-        return None;
-    }
-    Some(UiAction::Insert(ch.to_string()))
+/// Reassembles `WM_CHAR`'s UTF-16 units into characters: a high surrogate waits here for its low
+/// half. Per window, not a static, since two windows may be typed into in turn.
+#[derive(Default)]
+pub struct Utf16 {
+    high: Option<u16>,
 }
 
-/// Run an action against the core, returning what the shell still has to handle.
-pub fn apply(action: UiAction, editor: &Editor) -> Option<Request> {
-    match action {
-        UiAction::Insert(text) => editor.insert_text(&text),
-        UiAction::Backspace => {
-            editor.handle_backspace();
+impl Utf16 {
+    pub fn push(&mut self, unit: u16) -> Option<char> {
+        match unit {
+            0xD800..=0xDBFF => {
+                self.high = Some(unit);
+                None
+            }
+            0xDC00..=0xDFFF => {
+                let high = self.high.take()?;
+                char::decode_utf16([high, unit]).next()?.ok()
+            }
+            _ => {
+                self.high = None;
+                char::from_u32(u32::from(unit))
+            }
         }
-        UiAction::Move(direction) => editor.move_cursor(direction),
-        UiAction::Undo => {
-            editor.undo();
-        }
-        UiAction::Redo => {
-            editor.redo();
-        }
-        UiAction::Save => return Some(Request::Save),
     }
-    None
+}
+
+/// What a `WM_CHAR` character types: Enter's `\r` is a line break, Tab is a tab, and every other
+/// control character — Backspace's 0x08, Ctrl+S's 0x13 — was already handled as a key.
+pub fn typed(c: char) -> Option<char> {
+    match c {
+        '\r' => Some('\n'),
+        '\t' => Some('\t'),
+        c if c.is_control() => None,
+        c => Some(c),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use editor_core::Position;
 
     const NONE: Modifiers = Modifiers {
         ctrl: false,
         shift: false,
         alt: false,
     };
-    const CTRL: Modifiers = Modifiers {
-        ctrl: true,
-        shift: false,
-        alt: false,
-    };
-    const CTRL_SHIFT: Modifiers = Modifiers {
-        ctrl: true,
-        shift: true,
-        alt: false,
-    };
-    const ALT: Modifiers = Modifiers {
-        ctrl: false,
-        shift: false,
-        alt: true,
-    };
 
-    /// The risk of copying constants instead of importing them, made checkable.
-    ///
-    /// Only compiled for Windows, where the `windows` crate is a dependency, so it
-    /// runs in CI rather than here — which is the right way round: this is the one
-    /// assertion in the file that genuinely needs the platform.
+    #[test]
+    fn every_motion_has_a_key() {
+        let keys = [
+            VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN, VK_HOME, VK_END, VK_PRIOR, VK_NEXT,
+        ];
+        let mut reached = Vec::new();
+        for vk in keys {
+            for ctrl in [false, true] {
+                let mods = Modifiers { ctrl, ..NONE };
+                if let Some(Action::Move(motion, _)) = action_for_key(vk, mods) {
+                    reached.push(motion);
+                }
+            }
+        }
+        for motion in Motion::ALL {
+            assert!(reached.contains(&motion), "{} has no key", motion.name());
+        }
+    }
+
+    #[test]
+    fn menu_accelerators_are_keys_too() {
+        let ctrl = Modifiers { ctrl: true, ..NONE };
+        assert_eq!(
+            action_for_key(u16::from(b'Y'), ctrl),
+            Some(Action::Command(Command::Redo))
+        );
+        assert_eq!(
+            action_for_key(
+                0x72,
+                Modifiers {
+                    shift: true,
+                    ..NONE
+                }
+            ),
+            Some(Action::Command(Command::FindPrevious))
+        );
+        assert_eq!(
+            action_for_key(u16::from(b'Y'), NONE),
+            None,
+            "a plain Y is text"
+        );
+    }
+
+    #[test]
+    fn surrogate_pairs_become_one_character() {
+        let mut input = Utf16::default();
+        let units: Vec<u16> = "a😀".encode_utf16().collect();
+        let typed: Vec<char> = units.iter().filter_map(|&u| input.push(u)).collect();
+        assert_eq!(typed, ['a', '😀']);
+        assert_eq!(
+            Utf16::default().push(0xDC00),
+            None,
+            "a lone low half is dropped"
+        );
+    }
+
+    #[test]
+    fn control_characters_are_not_text() {
+        assert_eq!(typed('\r'), Some('\n'));
+        assert_eq!(typed('\u{8}'), None);
+        assert_eq!(typed('\u{13}'), None);
+        assert_eq!(typed('é'), Some('é'));
+    }
+
     #[cfg(windows)]
     #[test]
-    fn the_virtual_key_codes_match_the_windows_headers() {
-        use windows::Win32::UI::Input::KeyboardAndMouse as kb;
-        assert_eq!(vk::BACK, kb::VK_BACK.0);
-        assert_eq!(vk::TAB, kb::VK_TAB.0);
-        assert_eq!(vk::RETURN, kb::VK_RETURN.0);
-        assert_eq!(vk::LEFT, kb::VK_LEFT.0);
-        assert_eq!(vk::UP, kb::VK_UP.0);
-        assert_eq!(vk::RIGHT, kb::VK_RIGHT.0);
-        assert_eq!(vk::DOWN, kb::VK_DOWN.0);
-        // The letters are their ASCII codes, which is a documented guarantee.
-        assert_eq!(vk::S, b'S' as u16);
-        assert_eq!(vk::Y, b'Y' as u16);
-        assert_eq!(vk::Z, b'Z' as u16);
-    }
-
-    #[test]
-    fn typed_characters_are_inserted() {
-        assert_eq!(
-            action_for_char('a', NONE),
-            Some(UiAction::Insert("a".into()))
-        );
-        assert_eq!(
-            action_for_char(' ', NONE),
-            Some(UiAction::Insert(" ".into()))
-        );
-        assert_eq!(
-            action_for_char('ä', NONE),
-            Some(UiAction::Insert("ä".into()))
-        );
-    }
-
-    #[test]
-    fn control_characters_never_reach_the_document() {
-        // WM_CHAR delivers these alongside the WM_KEYDOWN that action_for_key
-        // already handled. Acting on both would insert every newline twice.
-        assert_eq!(action_for_char('\r', NONE), None);
-        assert_eq!(action_for_char('\t', NONE), None);
-        assert_eq!(action_for_char('\u{8}', NONE), None);
-        // Ctrl+S arrives here as 0x13 if it arrives at all.
-        assert_eq!(action_for_char('\u{13}', NONE), None);
-    }
-
-    #[test]
-    fn a_shortcut_does_not_also_type_its_letter() {
-        // Belt and braces on top of the control-character filter.
-        assert_eq!(action_for_char('s', CTRL), None);
-    }
-
-    #[test]
-    fn editing_keys_map_to_core_operations() {
-        assert_eq!(
-            action_for_key(vk::RETURN, NONE),
-            Some(UiAction::Insert("\n".into()))
-        );
-        assert_eq!(
-            action_for_key(vk::TAB, NONE),
-            Some(UiAction::Insert("\t".into()))
-        );
-        assert_eq!(action_for_key(vk::BACK, NONE), Some(UiAction::Backspace));
-        assert_eq!(
-            action_for_key(vk::DOWN, NONE),
-            Some(UiAction::Move(Direction::Down))
-        );
-        assert_eq!(
-            action_for_key(vk::LEFT, NONE),
-            Some(UiAction::Move(Direction::Left))
-        );
-    }
-
-    #[test]
-    fn the_shortcuts_are_the_windows_ones() {
-        assert_eq!(action_for_key(vk::S, CTRL), Some(UiAction::Save));
-        assert_eq!(action_for_key(vk::Z, CTRL), Some(UiAction::Undo));
-        // Ctrl+Y is redo on Windows. The GNOME and macOS shells do not agree, and
-        // are not supposed to.
-        assert_eq!(action_for_key(vk::Y, CTRL), Some(UiAction::Redo));
-        assert_eq!(action_for_key(vk::Z, CTRL_SHIFT), Some(UiAction::Redo));
-    }
-
-    #[test]
-    fn alt_is_left_to_the_window_manager() {
-        // Alt+F4 must reach DefWindowProc, and so must every menu mnemonic.
-        assert_eq!(action_for_key(vk::LEFT, ALT), None);
-        assert_eq!(action_for_key(vk::S, ALT), None);
-    }
-
-    #[test]
-    fn keys_this_shell_does_not_own_are_left_alone() {
-        // Home, End, PageUp, PageDown and Delete: the core has no operation for any
-        // of them, and inventing one in a shell is what the parity rule forbids.
-        for key in [0x24u16, 0x23, 0x21, 0x22, 0x2E, 0x1B, 0x74] {
-            assert_eq!(action_for_key(key, NONE), None);
+    fn the_copied_virtual_key_codes_match_winuser_h() {
+        use windows::Win32::UI::Input::KeyboardAndMouse as vk;
+        for (ours, theirs) in [
+            (VK_BACK, vk::VK_BACK),
+            (VK_ESCAPE, vk::VK_ESCAPE),
+            (VK_PRIOR, vk::VK_PRIOR),
+            (VK_NEXT, vk::VK_NEXT),
+            (VK_END, vk::VK_END),
+            (VK_HOME, vk::VK_HOME),
+            (VK_LEFT, vk::VK_LEFT),
+            (VK_UP, vk::VK_UP),
+            (VK_RIGHT, vk::VK_RIGHT),
+            (VK_DOWN, vk::VK_DOWN),
+            (VK_DELETE, vk::VK_DELETE),
+            (0x72, vk::VK_F3),
+        ] {
+            assert_eq!(ours, theirs.0);
         }
-        assert_eq!(action_for_key(0x54, CTRL), None, "Ctrl+T");
-        // No Ctrl+Q: quitting on Windows is Alt+F4 or the close button.
-        assert_eq!(action_for_key(0x51, CTRL), None, "Ctrl+Q");
-    }
-
-    #[test]
-    fn apply_routes_editing_to_the_core() {
-        let editor = Editor::new();
-        apply(UiAction::Insert("h".into()), &editor);
-        apply(UiAction::Insert("i".into()), &editor);
-        assert_eq!(editor.text(), "hi");
-
-        apply(UiAction::Backspace, &editor);
-        assert_eq!(editor.text(), "h");
-
-        apply(UiAction::Undo, &editor);
-        assert_eq!(editor.text(), "hi");
-        apply(UiAction::Redo, &editor);
-        assert_eq!(editor.text(), "h");
-    }
-
-    #[test]
-    fn saving_is_handed_back_to_the_shell_without_touching_the_document() {
-        let editor = Editor::new();
-        let action = action_for_key(vk::S, CTRL).unwrap();
-        assert_eq!(apply(action, &editor), Some(Request::Save));
-        assert_eq!(editor.text(), "");
-    }
-
-    #[test]
-    fn apply_moves_the_cursor_without_editing() {
-        let editor = Editor::new();
-        editor.insert_text("ab\ncd");
-        editor.set_cursor(Position::new(1, 2));
-
-        apply(UiAction::Move(Direction::Up), &editor);
-        assert_eq!(editor.cursor(), Position::new(0, 2));
-        assert_eq!(editor.text(), "ab\ncd");
     }
 }

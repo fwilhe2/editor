@@ -1,74 +1,114 @@
+# SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+
 [workspace]
-resolver = "2"
-members = ["core", "cli", "ffi", "ui_tui", "ui_linux", "ui_web", "ui_egui", "ui_win32"]
+members = ["core", "cli", "ui_tui", "ui_gtk", "ui_web", "ui_win32", "ui_mac"]
+# What a bare `cargo build` / `cargo test` walks: every crate that needs no system package.
+# `ui_gtk` needs `libgtk-4-dev` + `libadwaita-1-dev`, so without this the default commands
+# fail on a machine that has neither. `--workspace` still reaches it, and CI names crates
+# explicitly anyway (doc/ci.md).
+#
+# `ui_win32` and `ui_mac` *are* here: their platform halves are `cfg`-gated, so on any other
+# host they compile to their portable halves and run those tests (doc/architecture.md §5).
+default-members = ["core", "cli", "ui_tui", "ui_web", "ui_win32", "ui_mac"]
+resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
+repository = "https://github.com/fwilhe2/editor"
+# Applications, not libraries: nothing here goes to crates.io, and saying so is also what lets
+# `cargo deny` accept the workspace's path dependencies.
+publish = false
 
+# One version of each dependency for the whole workspace. A shell names `foo.workspace = true`
+# and never a version of its own, so two shells cannot drift onto two copies of one crate.
+#
+# There is no MSRV. The policy is "builds on current stable", which is what CI tests; a
+# stated-but-unchecked minimum is worse than none (doc/architecture.md, "Traps").
 [workspace.dependencies]
-editor-core = { path = "core" }
-ropey = "1.6"
+quill-core = { path = "core" }
+
+# The text is a rope. Default features off on purpose: ropey's defaults count CR, CRLF and
+# five Unicode separators as line breaks, so a lone `\r` would start a line here that the
+# file's own reader would not see. With them off, only LF breaks a line — and `core/src/
+# encoding.rs` normalises CRLF on the way in and restores it on the way out.
+ropey = { version = "1.6", default-features = false, features = ["simd"] }
+# Where a line may wrap (UAX #14) and where a caret may stop (UAX #29). Both in the core,
+# because both are editing semantics: if a shell decided them, two shells would disagree
+# about what Ctrl+Right does.
+unicode-linebreak = "0.1"
+unicode-segmentation = "1.12"
+# How many terminal cells a character takes — the terminal shell's whole `Metrics`.
+unicode-width = "0.2"
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
+
+# The terminal shell. crossterm is reached as `ratatui::crossterm`, never directly, so the
+# two cannot drift — the same rule as `libadwaita::gtk`.
 ratatui = "0.30"
-# Pulls in gtk4 as `libadwaita::gtk`; GNOME HIG widgets come from libadwaita itself.
-# v1_5 is what AdwAlertDialog needs, and matches the runtime on ubuntu-24.04.
+
+# The GNOME shell. gtk4 is reached as `libadwaita::gtk`; `v1_5` is what `AdwAlertDialog`
+# needs and matches the runtime on ubuntu-24.04.
 libadwaita = { version = "0.7", features = ["v1_5"] }
-# Carries core notifications from the observer onto the GTK main context.
+# Named only to switch on GTK 4.12's API (`gtk::FileDialog`, a primary `MenuButton`) in the
+# gtk4 crate libadwaita already brings; code still reaches it as `libadwaita::gtk`. 4.14 is
+# what ubuntu-24.04 ships.
+gtk4 = { version = "0.9", features = ["v4_12"] }
+# Carries the core's notifications onto the GTK main context.
 async-channel = "2"
-# Swift bindings come from a uniffi-bindgen binary inside `ffi/` itself, so the
-# generator can never be on a different version from the runtime. There is no
-# second version to pin here any more: the C# shell, and with it the external
-# uniffi-bindgen-cs generator, was replaced by ui_win32/ — see
-# doc/decision-win32-shell.md.
-uniffi = "0.31"
-# The Win32 shell. Microsoft's own projection of the Windows API, and the whole of
-# that shell's dependency list — there is deliberately nothing else. Only the
-# features it actually calls are enabled; the crate is enormous and feature-gated
-# per module, so an unused one costs nothing but an unnoticed one fails to link.
-#
-# Declared under a `cfg(windows)` target in ui_win32/Cargo.toml, which is what lets
-# the shell's portable modules compile and test on any host.
-windows = { version = "0.62", features = [
-  "Win32_Foundation",
-  "Win32_Globalization",
-  "Win32_Graphics_Dwm",
-  "Win32_Graphics_Gdi",
-  "Win32_System_LibraryLoader",
-  "Win32_System_Registry",
-  "Win32_UI_HiDpi",
-  "Win32_UI_Input_KeyboardAndMouse",
-  "Win32_UI_WindowsAndMessaging",
-] }
-# The browser shell's binding mechanism — neither a Cargo dependency on the core
-# (that is how it reaches the core) nor UniFFI, which has no JavaScript target.
-# wasm-bindgen and the `wasm-bindgen` CLI that post-processes the module must be
-# the same version; see .github/workflows/web.yml.
+# Pango on a cairo surface with no display: what `quill-gtk --render-to` draws with, and the
+# same calls the window's draw function makes. The same gtk-rs release as gtk4 0.9.
+pangocairo = "0.20"
+# For `write_to_png`, which is behind a feature; the same crate as `gtk::cairo`, so enabling it
+# here enables it there.
+cairo-rs = { version = "0.20", features = ["png"] }
+
+# The browser shell. The `wasm-bindgen` *CLI* that post-processes the module must be exactly
+# this crate's version; `ui_web/build.sh` reads it out of Cargo.lock and refuses a mismatch.
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 web-sys = "0.3"
-# The portable shell. egui is reached through `eframe::egui`, never as a direct
-# dependency, so the two versions cannot drift — the same rule as
-# `ratatui::crossterm` and `libadwaita::gtk`.
-#
-# Deliberately not the default features: those select the wgpu backend and a large
-# graphics stack this editor has no use for, while glow runs on software GL, which
-# is what a VM or a remote session actually offers. Turning the defaults off also
-# drops accesskit, which is put back by hand — it is what makes the shell reachable
-# by a screen reader, and what the test harness queries.
-eframe = { version = "0.36", default-features = false, features = [
-  "accesskit",
-  "default_fonts",
-  "glow",
-  "wayland",
-  "x11",
+
+# The Windows shell: Microsoft's own projection of the Windows API, gated on `cfg(windows)`
+# in `ui_win32/Cargo.toml`. Feature-gated per namespace; only what is called is enabled.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Registry",
+    "Win32_UI_Controls",
+    "Win32_UI_Controls_Dialogs",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
 ] }
-# egui, eframe and egui_kittest are released in lockstep and must share a minor
-# version. `eframe::egui` polices two of them; this one is a dev-dependency that
-# nothing re-exports, so it is the version to check by hand when eframe moves.
-egui_kittest = "0.36"
+# Compiles `ui_win32/data/app.rc` (icon, version block, manifest) — a build dependency, so it
+# builds for the host, and a no-op wherever there is no resource compiler for the target.
+embed-resource = "3"
+
+# The macOS shell: AppKit, Foundation, CoreGraphics and CoreText from Rust, gated on
+# `cfg(target_os = "macos")` in `ui_mac/Cargo.toml`. Default features off and each class
+# named, for the reason the `windows` features are.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false }
+objc2-app-kit = { version = "0.3", default-features = false }
+objc2-core-foundation = { version = "0.3", default-features = false }
+objc2-core-graphics = { version = "0.3", default-features = false }
+objc2-core-text = { version = "0.3", default-features = false }
+
+[profile.release]
+# Small binaries are a feature of a native app; `artifacts.yml` records every size.
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

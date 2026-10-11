@@ -1,97 +1,99 @@
-//! `editor-web` — the browser shell over the editor core.
+// SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+//
+// SPDX-License-Identifier: MIT
+
+//! `quill-web` — the editor in a browser tab.
 //!
-//! A third class of shell. The CLI, TUI and GTK apps are Rust and call the core
-//! directly; Windows and macOS are foreign languages reaching it through UniFFI.
-//! This one is Rust *and* foreign at once: the crate depends on `editor-core` as an
-//! ordinary Cargo dependency, compiles to `wasm32-unknown-unknown`, and talks to
-//! the page through `wasm-bindgen` — UniFFI has no JavaScript target, and would be
-//! the wrong tool anyway when the shell is written in Rust.
+//! Rust compiled to `wasm32-unknown-unknown` and bound to the page with `wasm-bindgen`: the
+//! crate depends on `quill-core` as an ordinary dependency, so this shell has no FFI facade
+//! and no generated bindings beyond the JavaScript glue that loads the module.
 //!
-//! The DOM here is a *renderer*, not the document. There is no `contenteditable`
-//! anywhere: the surface is a plain focusable element whose lines are rebuilt from
-//! `get_viewport` on every repaint, exactly as the GTK `TextView` and the WinUI
-//! `TextBox` are. Letting the browser edit the text would create a second source of
-//! truth, and the browser would win.
+//! **The DOM is a renderer, not the document.** There is no `contenteditable` anywhere: each
+//! frame rebuilds the visible rows from [`App::view`], and typing reaches the core through a
+//! hidden `<textarea>` that is emptied on every `input` event. A `contenteditable` would be a
+//! second copy of the text, edited by the browser by rules of its own.
 //!
-//! The browser is also the first platform here with no filesystem. A file arrives
-//! from the File API as a string and leaves as a download, which is what
-//! `Editor::load_text` and `Editor::save_to_string` exist for; the shell never
-//! learns a path, because there isn't one.
+//! **The browser has no filesystem**, which is why every `*_file` method in the core has a
+//! `*_bytes` twin: a file arrives from the picker as bytes and leaves as a download.
+//!
+//! **A page, not a window.** A browser tab has no menu bar and inventing one makes a worse
+//! desktop application, so there is one toolbar of common verbs and **Ctrl+K**, a palette over
+//! every [`Command`] (`doc/shells/web.md`).
 
 mod keymap;
-mod layout;
+mod metrics;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use editor_core::{Editor, EditorObserver};
+use quill_core::layout::{self, Metrics};
+use quill_core::{App, Command, Frame, Observer, Search, command};
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::{spawn_local, JsFuture};
+use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{
-    Document, Event, File, HtmlAnchorElement, HtmlButtonElement, HtmlElement, HtmlInputElement,
-    KeyboardEvent, MouseEvent, WheelEvent,
+    ClipboardEvent, Document, Event, HtmlElement, HtmlInputElement, HtmlTextAreaElement,
+    InputEvent, KeyboardEvent, MouseEvent, WheelEvent,
 };
 
-use keymap::{Chord, Request};
-use layout::Metrics;
+use keymap::{Action, Chord};
+use metrics::CanvasMetrics;
 
 /// What a document with no name is downloaded as.
-const UNTITLED: &str = "untitled.txt";
-
-/// The probe element's text, whose width divided by its length is one character.
-const PROBE_CHARS: f64 = 10.0;
+const DOWNLOAD_NAME: &str = "untitled.txt";
 
 thread_local! {
-    /// The live shell, so the animation-frame callback can find its way back to it.
-    /// The page owns it until the tab closes; nothing ever takes it out again.
+    /// The live shell, so an animation-frame callback can find its way back to it. The page
+    /// owns it until the tab closes.
     static UI: RefCell<Option<Rc<Ui>>> = const { RefCell::new(None) };
 }
 
-/// Called by the generated JS glue as soon as the module is instantiated.
+/// Called by the generated glue as soon as the module is instantiated.
 #[wasm_bindgen(start)]
 pub fn start() -> Result<(), JsValue> {
-    let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
-    let document = window
-        .document()
-        .ok_or_else(|| JsValue::from_str("no document"))?;
-
-    let editor = Arc::new(Editor::new());
+    let window = web_sys::window().ok_or("no window")?;
+    let document = window.document().ok_or("no document")?;
+    let app = Arc::new(App::new());
     let ui = Rc::new(Ui {
-        editor: editor.clone(),
+        app: app.clone(),
         dom: Dom::find(&document)?,
         pending: Arc::new(AtomicBool::new(false)),
-        message: RefCell::new("Open a file, or start typing.".to_string()),
+        message: RefCell::new("Open a file, or start typing. Ctrl+K lists every command.".into()),
+        dragging: Cell::new(false),
+        wheel: Cell::new(0.0),
+        selected: Cell::new(0),
+        mac: window
+            .navigator()
+            .platform()
+            .is_ok_and(|p| p.starts_with("Mac")),
     });
-
-    // The core pushes; the shell never polls. This is the same contract the TUI
-    // implements with a flag and the GTK shell with a channel.
-    editor.set_observer(Arc::new(Notifier(ui.pending.clone())));
+    app.observe(Arc::new(Notifier(ui.pending.clone())));
 
     wire_keyboard(&ui)?;
+    wire_clipboard(&ui)?;
     wire_pointer(&ui)?;
     wire_toolbar(&ui)?;
-    wire_file_input(&ui)?;
+    wire_find(&ui)?;
+    wire_palette(&ui)?;
+    wire_files(&ui)?;
     wire_window(&ui, &window)?;
 
     UI.with(|slot| *slot.borrow_mut() = Some(ui.clone()));
-
-    ui.dom.surface.focus()?;
+    ui.dom.input.focus()?;
     ui.refresh();
     Ok(())
 }
 
 /// Raises a repaint when the core changes, and schedules the frame that draws it.
 ///
-/// `EditorObserver` is `Send + Sync`, so this may not hold anything from the page —
-/// a wasm module is single-threaded, but the trait does not know that. It holds a
-/// flag instead, which doubles as "a frame is already scheduled": a keystroke that
-/// notifies twice still repaints once.
+/// [`Observer`] is `Send + Sync`, and the page is neither — a wasm module is single-threaded,
+/// but the trait does not know that. So this holds a flag, which doubles as "a frame is already
+/// scheduled": a keystroke that notifies three times repaints once.
 struct Notifier(Arc<AtomicBool>);
 
-impl EditorObserver for Notifier {
-    fn state_changed(&self) {
+impl Observer for Notifier {
+    fn changed(&self) {
         if !self.0.swap(true, Ordering::SeqCst) {
             request_frame();
         }
@@ -102,57 +104,55 @@ fn request_frame() {
     let Some(window) = web_sys::window() else {
         return;
     };
-    // `once_into_js` hands the closure to JS and frees it after the call, which is
-    // what makes a per-frame allocation acceptable here.
     let callback = Closure::once_into_js(move || {
-        UI.with(|slot| {
-            let ui = slot.borrow().clone();
-            if let Some(ui) = ui {
-                ui.refresh();
-            }
-        });
+        let ui = UI.with(|slot| slot.borrow().clone());
+        if let Some(ui) = ui {
+            ui.refresh();
+        }
     });
     let _ = window.request_animation_frame(callback.unchecked_ref());
 }
 
-/// The elements this shell writes to. No editor state — that all stays in the core.
+/// The elements this shell writes to. No document state.
 struct Dom {
     document: Document,
-    surface: HtmlElement,
-    /// The positioning context for the caret, and the box whose height decides how
-    /// many lines the core is asked for.
-    lines: HtmlElement,
-    /// Rebuilt from the viewport on every repaint.
-    text: HtmlElement,
+    page: HtmlElement,
+    gutter: HtmlElement,
+    rows: HtmlElement,
     caret: HtmlElement,
-    probe: HtmlElement,
+    /// Where typing, the input method and the clipboard events arrive. Always emptied.
+    input: HtmlTextAreaElement,
     name: HtmlElement,
     message: HtmlElement,
     position: HtmlElement,
-    open: HtmlButtonElement,
-    save: HtmlButtonElement,
-    undo: HtmlButtonElement,
-    redo: HtmlButtonElement,
+    findbar: HtmlElement,
+    find_input: HtmlInputElement,
+    palette: HtmlElement,
+    palette_input: HtmlInputElement,
+    palette_list: HtmlElement,
     file_input: HtmlInputElement,
+    measure: web_sys::HtmlCanvasElement,
 }
 
 impl Dom {
-    fn find(document: &Document) -> Result<Self, JsValue> {
+    fn find(document: &Document) -> Result<Dom, JsValue> {
         Ok(Dom {
             document: document.clone(),
-            surface: element(document, "surface")?,
-            lines: element(document, "lines")?,
-            text: element(document, "text")?,
+            page: element(document, "page")?,
+            gutter: element(document, "gutter")?,
+            rows: element(document, "rows")?,
             caret: element(document, "caret")?,
-            probe: element(document, "probe")?,
+            input: element(document, "input")?,
             name: element(document, "name")?,
             message: element(document, "message")?,
             position: element(document, "position")?,
-            open: element(document, "open")?,
-            save: element(document, "save")?,
-            undo: element(document, "undo")?,
-            redo: element(document, "redo")?,
+            findbar: element(document, "findbar")?,
+            find_input: element(document, "find-input")?,
+            palette: element(document, "palette")?,
+            palette_input: element(document, "palette-input")?,
+            palette_list: element(document, "palette-list")?,
             file_input: element(document, "file-input")?,
+            measure: element(document, "measure")?,
         })
     }
 }
@@ -166,21 +166,78 @@ fn element<T: JsCast>(document: &Document, id: &str) -> Result<T, JsValue> {
 }
 
 struct Ui {
-    editor: Arc<Editor>,
+    app: Arc<App>,
     dom: Dom,
-    /// Set by the observer, cleared by the repaint it asked for.
     pending: Arc<AtomicBool>,
-    /// Presentation only: the last thing the shell has to say. The core knows
-    /// nothing about it, so changing it has to raise a repaint by hand.
+    /// The last thing the shell has to say — presentation only, so changing it asks for a
+    /// frame by hand.
     message: RefCell<String>,
+    dragging: Cell<bool>,
+    /// Wheel movement not yet a whole row.
+    wheel: Cell<f64>,
+    /// The highlighted palette row.
+    selected: Cell<usize>,
+    mac: bool,
 }
 
 impl Ui {
-    /// Repaint from the core.
-    ///
-    /// Renders whatever the core's scroll offset says and deliberately does not call
-    /// `follow_cursor` — key handling does that. If the repaint moved the view, a
-    /// wheel scroll away from the cursor would snap straight back.
+    /// Measure with the font the page draws in — read from the computed style, so the
+    /// stylesheet stays the one place it is chosen.
+    fn metrics(&self) -> CanvasMetrics {
+        let window = web_sys::window().unwrap();
+        let style = window.get_computed_style(&self.dom.page).ok().flatten();
+        // From the longhands: Firefox answers the `font` shorthand with an empty string, and a
+        // canvas left on its default 10px font measures every row too short to wrap.
+        let font = style.as_ref().and_then(|s| {
+            let get = |name| s.get_property_value(name).ok().filter(|v| !v.is_empty());
+            Some(format!(
+                "{} {} {} {}",
+                get("font-style").unwrap_or_else(|| "normal".into()),
+                get("font-weight").unwrap_or_else(|| "400".into()),
+                get("font-size")?,
+                get("font-family")?
+            ))
+        });
+        let line_height = style
+            .as_ref()
+            .and_then(|s| s.get_property_value("line-height").ok())
+            .and_then(|h| h.trim_end_matches("px").parse::<f32>().ok())
+            .unwrap_or(0.0);
+        let canvas = self
+            .dom
+            .measure
+            .get_context("2d")
+            .ok()
+            .flatten()
+            .and_then(|c| c.dyn_into::<web_sys::CanvasRenderingContext2d>().ok());
+        if let (Some(canvas), Some(font)) = (&canvas, &font) {
+            canvas.set_font(font);
+        }
+        CanvasMetrics::new(canvas, line_height)
+    }
+
+    fn with_frame<T>(&self, f: impl FnOnce(&Frame) -> T) -> T {
+        let metrics = self.metrics();
+        let frame = Frame::new(
+            self.dom.page.client_width() as f32,
+            self.dom.page.client_height() as f32,
+            &metrics,
+        );
+        f(&frame)
+    }
+
+    fn after_input(&self) {
+        self.with_frame(|frame| self.app.follow_caret(frame));
+    }
+
+    fn say(&self, message: impl Into<String>) {
+        *self.message.borrow_mut() = message.into();
+        if !self.pending.swap(true, Ordering::SeqCst) {
+            request_frame();
+        }
+    }
+
+    /// Repaint from the core — from its scroll position, never scrolling.
     fn refresh(&self) {
         self.pending.store(false, Ordering::SeqCst);
         if let Err(error) = self.render() {
@@ -189,317 +246,572 @@ impl Ui {
     }
 
     fn render(&self) -> Result<(), JsValue> {
-        let metrics = self.metrics();
-        let height = self.visible_lines(metrics);
-        let start = self.editor.scroll_offset();
-        let viewport = self
-            .editor
-            .get_viewport(start, start.saturating_add(height));
+        let view = self.with_frame(|frame| self.app.view(frame));
+        let doc = &self.dom.document;
 
-        // One element per visible line, rebuilt each frame. The cost is bounded by
-        // the window, not the document — which is the whole point of the viewport.
-        self.dom.text.set_text_content(None);
-        for line in &viewport.lines {
-            let element = self.dom.document.create_element("div")?;
-            element.set_class_name("line");
-            element.set_text_content(Some(line));
-            self.dom.text.append_child(&element)?;
+        // One element per visible row, rebuilt each frame: the cost is the window's, never the
+        // file's, which is the point of a windowed read.
+        self.dom.rows.set_text_content(None);
+        self.dom.gutter.set_text_content(None);
+        for row in &view.rows {
+            if let Some(selection) = row.selection {
+                let mark = doc.create_element("div")?;
+                mark.set_class_name("selection");
+                mark.set_attribute(
+                    "style",
+                    &format!(
+                        "top:{}px;left:{}px;width:{}px;height:{}px",
+                        row.top,
+                        selection.from,
+                        selection.to - selection.from,
+                        view.row_height
+                    ),
+                )?;
+                self.dom.rows.append_child(&mark)?;
+            }
+            let line = doc.create_element("div")?;
+            line.set_class_name("row");
+            line.set_attribute("style", &format!("top:{}px", row.top))?;
+            line.set_text_content(Some(&layout::printable(&row.text).0));
+            self.dom.rows.append_child(&line)?;
+            if row.first {
+                let number = doc.create_element("div")?;
+                number.set_class_name("number");
+                number.set_attribute("style", &format!("top:{}px", row.top))?;
+                number.set_text_content(Some(&(row.line + 1).to_string()));
+                self.dom.gutter.append_child(&number)?;
+            }
         }
 
-        let cursor = viewport.cursor;
         let caret = self.dom.caret.style();
-        if cursor.line >= viewport.start_line && cursor.line < viewport.start_line + height {
-            let (x, y) = metrics.caret_offset(cursor.line - viewport.start_line, cursor.column);
-            caret.set_property("transform", &format!("translate({x}px, {y}px)"))?;
-            caret.set_property("height", &format!("{}px", metrics.line_height))?;
-            caret.set_property("display", "block")?;
-        } else {
-            // Scrolled out of view: there is nowhere honest to draw it.
-            caret.set_property("display", "none")?;
+        let input = self.dom.input.style();
+        match view.caret {
+            Some(at) => {
+                let place = format!("translate({}px, {}px)", at.x, at.top);
+                caret.set_property("transform", &place)?;
+                caret.set_property("height", &format!("{}px", at.height))?;
+                caret.set_property("display", "block")?;
+                // The input follows the caret, so an input method's window opens beside it.
+                input.set_property("transform", &place)?;
+            }
+            None => caret.set_property("display", "none")?,
         }
 
-        let dirty = self.editor.is_dirty();
-        let name = self.document_name();
+        let dirty = self.app.is_dirty();
+        let name = self.app.title();
         self.dom
             .name
             .set_text_content(Some(&format!("{name}{}", if dirty { " •" } else { "" })));
         self.dom
             .message
             .set_text_content(Some(&self.message.borrow()));
+        let position = self.app.caret();
         self.dom.position.set_text_content(Some(&format!(
-            "Ln {}, Col {} · {} lines · {} chars",
-            cursor.line + 1,
-            cursor.column + 1,
-            viewport.total_lines,
-            self.editor.char_count()
+            "Ln {}, Col {} · {} lines · {}",
+            position.line + 1,
+            position.column + 1,
+            view.line_count,
+            self.app.encoding().line_ending.as_str()
         )));
-
-        self.dom.undo.set_disabled(!self.editor.can_undo());
-        self.dom.redo.set_disabled(!self.editor.can_redo());
-        self.dom
-            .document
-            .set_title(&format!("{}{name} — Editor", if dirty { "• " } else { "" }));
+        for (command, enabled) in [
+            (Command::Undo, self.app.can_undo()),
+            (Command::Redo, self.app.can_redo()),
+        ] {
+            if let Some(button) = self
+                .dom
+                .document
+                .query_selector(&format!("[data-command=\"{}\"]", command.id()))?
+            {
+                button.toggle_attribute_with_force("disabled", !enabled)?;
+            }
+        }
+        doc.set_title(&format!(
+            "{}{name} — {}",
+            if dirty { "• " } else { "" },
+            quill_core::APP_NAME
+        ));
         Ok(())
     }
 
-    /// Measure the character grid from a probe carrying the same CSS as a line.
-    ///
-    /// Re-measured every frame rather than cached: page zoom and a late-loading
-    /// font both change it, and neither fires an event this shell would hear.
-    fn metrics(&self) -> Metrics {
-        let rect = self.dom.probe.get_bounding_client_rect();
-        Metrics::new(rect.width() / PROBE_CHARS, rect.height())
+    fn act(self: &Rc<Self>, action: Action) {
+        let app = &self.app;
+        match action {
+            Action::Command(command) => return self.run(command),
+            Action::Move(motion, extend) => {
+                self.with_frame(|frame| app.move_caret(motion, extend, frame));
+            }
+            Action::Delete(kind) => {
+                app.delete(kind);
+            }
+            Action::Type(c) => app.type_text(c.encode_utf8(&mut [0; 4])),
+            Action::Escape => {
+                app.clear_selection();
+            }
+            Action::Palette => return self.open_palette(),
+        }
+        self.after_input();
     }
 
-    /// How many lines fit right now — the one number only the shell can know.
-    fn visible_lines(&self, metrics: Metrics) -> u64 {
-        metrics.visible_lines(self.dom.lines.client_height() as f64)
+    /// Carry out a menu verb.
+    fn run(self: &Rc<Self>, command: Command) {
+        let app = &self.app;
+        match command {
+            Command::New | Command::Close => {
+                if self.may_discard() {
+                    app.new_document();
+                }
+            }
+            Command::Open => {
+                if self.may_discard() {
+                    // Only allowed from a user gesture, which every caller here is.
+                    self.dom.file_input.click();
+                }
+            }
+            Command::Save => self.download(None),
+            Command::SaveAs => {
+                let window = web_sys::window().unwrap();
+                if let Ok(Some(name)) =
+                    window.prompt_with_message_and_default("Save as", &self.download_name())
+                    && !name.is_empty()
+                {
+                    self.download(Some(&name));
+                }
+            }
+            Command::Undo => {
+                app.undo();
+            }
+            Command::Redo => {
+                app.redo();
+            }
+            // From a button or the palette: ask the browser to send the input its own event, so
+            // there is one path to the clipboard (see `wire_clipboard`).
+            Command::Cut | Command::Copy => {
+                if let Some(document) = self.dom.document.dyn_ref::<web_sys::HtmlDocument>() {
+                    self.dom.input.focus().ok();
+                    let verb = if command == Command::Cut {
+                        "cut"
+                    } else {
+                        "copy"
+                    };
+                    let _ = document.exec_command(verb);
+                }
+            }
+            Command::Paste => {
+                let ui = self.clone();
+                let read = web_sys::window()
+                    .unwrap()
+                    .navigator()
+                    .clipboard()
+                    .read_text();
+                spawn_local(async move {
+                    match JsFuture::from(read).await {
+                        Ok(text) => {
+                            ui.app.insert_text(&text.as_string().unwrap_or_default());
+                            ui.after_input();
+                        }
+                        Err(_) => ui.say("The browser would not share the clipboard — use Ctrl+V"),
+                    }
+                });
+            }
+            Command::SelectAll => app.select_all(),
+            Command::Find => {
+                self.dom.findbar.set_hidden(false);
+                self.dom
+                    .find_input
+                    .set_value(&app.search().unwrap_or_default());
+                let _ = self.dom.find_input.focus();
+                self.dom.find_input.select();
+            }
+            Command::FindNext | Command::FindPrevious => {
+                if app.search().is_none() {
+                    return self.run(Command::Find);
+                }
+                let direction = if command == Command::FindNext {
+                    Search::Forward
+                } else {
+                    Search::Backward
+                };
+                if !app.find_again(direction) {
+                    self.say("No match");
+                }
+            }
+            Command::About => self.say(format!(
+                "{} {} — a shared core with native shells, compiled to WebAssembly. MIT licensed.",
+                quill_core::APP_NAME,
+                quill_core::VERSION
+            )),
+        }
+        self.after_input();
     }
 
-    fn follow_cursor(&self) {
-        let metrics = self.metrics();
-        self.editor.follow_cursor(self.visible_lines(metrics));
+    /// A tab's way of asking before discarding work: the browser's own confirm.
+    fn may_discard(&self) -> bool {
+        !self.app.is_dirty()
+            || web_sys::window()
+                .unwrap()
+                .confirm_with_message("Discard your unsaved changes?")
+                .unwrap_or(false)
     }
 
-    fn on_key(&self, event: &KeyboardEvent) {
+    fn download_name(&self) -> String {
+        match self.app.path() {
+            Some(_) => self.app.title(),
+            None => DOWNLOAD_NAME.into(),
+        }
+    }
+
+    /// Hand the document to a download — the browser's Save.
+    fn download(&self, name: Option<&str>) {
+        let name = name.map_or_else(|| self.download_name(), str::to_string);
+        let bytes = self.app.save_bytes(Some(&name));
+        match self.offer(&name, &bytes) {
+            Ok(()) => self.say(format!("Saved {name} to your downloads")),
+            Err(_) => self.say(format!("The browser refused to download {name}")),
+        }
+    }
+
+    fn offer(&self, name: &str, bytes: &[u8]) -> Result<(), JsValue> {
+        let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));
+        let blob = web_sys::Blob::new_with_u8_array_sequence(&parts)?;
+        let url = web_sys::Url::create_object_url_with_blob(&blob)?;
+        let anchor: web_sys::HtmlAnchorElement =
+            self.dom.document.create_element("a")?.dyn_into()?;
+        anchor.set_href(&url);
+        anchor.set_download(name);
+        anchor.click();
+        web_sys::Url::revoke_object_url(&url)
+    }
+
+    async fn load(self: Rc<Self>, file: web_sys::File) {
+        let name = file.name();
+        let buffer = match JsFuture::from(file.array_buffer()).await {
+            Ok(buffer) => buffer,
+            Err(_) => return self.say(format!("Could not read {name}")),
+        };
+        let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
+        match self.app.open_bytes(Some(&name), &bytes) {
+            Ok(()) => self.say(format!("Opened {name}")),
+            Err(error) => self.say(error.to_string()),
+        }
+        let _ = self.dom.input.focus();
+    }
+
+    // --- the palette -----------------------------------------------------------------------
+
+    fn open_palette(&self) {
+        self.dom.palette.set_hidden(false);
+        self.dom.palette_input.set_value("");
+        self.selected.set(0);
+        self.render_palette();
+        let _ = self.dom.palette_input.focus();
+    }
+
+    fn close_palette(&self) {
+        self.dom.palette.set_hidden(true);
+        let _ = self.dom.input.focus();
+    }
+
+    fn matches(&self) -> Vec<Command> {
+        let query = self.dom.palette_input.value();
+        let mut ranked: Vec<(u32, Command)> = Command::ALL
+            .iter()
+            .filter_map(|&c| command::score(&query, c.label()).map(|s| (s, c)))
+            .collect();
+        ranked.sort_by_key(|&(score, _)| std::cmp::Reverse(score));
+        ranked.into_iter().map(|(_, c)| c).collect()
+    }
+
+    fn render_palette(&self) {
+        let list = &self.dom.palette_list;
+        list.set_text_content(None);
+        for (i, command) in self.matches().into_iter().enumerate() {
+            let Ok(item) = self.dom.document.create_element("li") else {
+                return;
+            };
+            item.set_attribute("data-command", command.id()).ok();
+            if i == self.selected.get() {
+                item.set_class_name("selected");
+            }
+            let key = keymap::describe(command, self.mac).unwrap_or_default();
+            item.set_inner_html(&format!(
+                "<span class=\"label\">{}</span><span class=\"summary\">{}</span><kbd>{key}</kbd>",
+                command.label(),
+                command.summary()
+            ));
+            list.append_child(&item).ok();
+        }
+    }
+}
+
+// --- wiring --------------------------------------------------------------------------------
+
+/// Attach a listener for the life of the page. The closure is leaked on purpose: it lives as
+/// long as the element it is attached to, which is as long as the page.
+fn listen<E: wasm_bindgen::convert::FromWasmAbi + 'static>(
+    target: &web_sys::EventTarget,
+    event: &str,
+    handler: impl FnMut(E) + 'static,
+) -> Result<(), JsValue> {
+    let closure = Closure::<dyn FnMut(E)>::new(handler);
+    target.add_event_listener_with_callback(event, closure.as_ref().unchecked_ref())?;
+    closure.forget();
+    Ok(())
+}
+
+fn wire_keyboard(ui: &Rc<Ui>) -> Result<(), JsValue> {
+    let keys = ui.clone();
+    listen(&ui.dom.input, "keydown", move |event: KeyboardEvent| {
+        // While an input method is composing, every key is its.
+        if event.is_composing() {
+            return;
+        }
         let key = event.key();
         let chord = Chord {
             key: &key,
-            // ⌘ on macOS, Ctrl everywhere else. Resolved here so the keymap does
-            // not have to know which platform the browser is running on.
             primary: event.ctrl_key() || event.meta_key(),
             shift: event.shift_key(),
             alt: event.alt_key(),
         };
-
         let Some(action) = keymap::action_for(&chord) else {
-            // Not ours: Ctrl+T, F5 and the rest still belong to the browser.
             return;
         };
-        // Handled keys must not also do their default thing — Tab moves focus,
-        // Ctrl+S opens the browser's own save dialog.
+        // Handled keys must not also do their default: Tab moves focus, Ctrl+S saves the page.
         event.prevent_default();
+        keys.say(String::new());
+        keys.act(action);
+    })?;
 
-        self.set_message(String::new());
-        match keymap::apply(action, &self.editor) {
-            Some(Request::Open) => self.open_picker(),
-            Some(Request::Save) => self.save(),
-            None => {}
-        }
-        // Keep the caret on screen; the repaint itself comes from the observer.
-        self.follow_cursor();
-    }
-
-    fn on_pointer(&self, event: &MouseEvent) -> Result<(), JsValue> {
-        // The pointer is a first-class input on the web, and `set_cursor` is core
-        // API, so clicking to place the caret costs the architecture nothing.
-        let rect = self.dom.lines.get_bounding_client_rect();
-        let metrics = self.metrics();
-        let position = metrics.position_at(
-            event.client_x() as f64 - rect.left(),
-            event.client_y() as f64 - rect.top(),
-            self.editor.scroll_offset(),
-        );
-        self.editor.set_cursor(position);
-        // A click has to hand the keyboard back, or typing stops after it.
-        self.dom.surface.focus()
-    }
-
-    fn on_wheel(&self, event: &WheelEvent) {
-        let metrics = self.metrics();
-        let page = self.visible_lines(metrics);
-        let delta = metrics.wheel_lines(event.delta_y(), event.delta_mode(), page);
-        if delta == 0 {
+    // Typed text, from a keyboard, an input method or a phone: whatever the textarea received,
+    // given to the core and taken back out, so the textarea never holds a document of its own.
+    let typed = ui.clone();
+    listen(&ui.dom.input, "input", move |event: InputEvent| {
+        if event.is_composing() {
             return;
         }
-        // Straight into the core's scroll offset, so this shell scrolls by exactly
-        // the same rule as every other one.
-        let offset = layout::scrolled_by(self.editor.scroll_offset(), delta);
-        self.editor.set_scroll_offset(offset);
-    }
-
-    fn open_picker(&self) {
-        // Clearing the value first, or picking the same file twice fires no change
-        // event and the second open silently does nothing.
-        self.dom.file_input.set_value("");
-        self.dom.file_input.click();
-    }
-
-    /// Read a picked file into the core.
-    ///
-    /// The name is all the browser gives us — there is no path, and no way to write
-    /// back to where the file came from. It travels with the document only so the
-    /// download has something to be called.
-    async fn load(self: Rc<Self>, file: File) {
-        let name = file.name();
-        match JsFuture::from(file.text()).await {
-            Ok(value) => {
-                let text = value.as_string().unwrap_or_default();
-                self.editor.load_text(Some(&name), &text);
-                self.set_message(format!("Opened {name}"));
-            }
-            Err(_) => self.set_message(format!("Could not read {name}")),
+        let text = typed.dom.input.value();
+        typed.dom.input.set_value("");
+        if !text.is_empty() {
+            typed.app.type_text(&text);
+            typed.after_input();
         }
-    }
-
-    /// Save by handing the document to a download — the only writing a page may do.
-    fn save(&self) {
-        let name = self.document_name();
-        let text = self.editor.save_to_string(None);
-        match self.download(&name, &text) {
-            Ok(()) => self.set_message(format!("Saved {name} to your downloads")),
-            // The document is now marked saved and isn't; say so loudly rather than
-            // keeping a second copy of the whole buffer around for a case that only
-            // happens when the browser blocks downloads outright.
-            Err(_) => self.set_message(format!("The browser refused to download {name}")),
+    })?;
+    let composed = ui.clone();
+    listen(&ui.dom.input, "compositionend", move |_: Event| {
+        let text = composed.dom.input.value();
+        composed.dom.input.set_value("");
+        if !text.is_empty() {
+            composed.app.type_text(&text);
+            composed.after_input();
         }
-    }
-
-    fn download(&self, name: &str, text: &str) -> Result<(), JsValue> {
-        let parts = js_sys::Array::new();
-        parts.push(&JsValue::from_str(text));
-        let blob = web_sys::Blob::new_with_str_sequence(&parts)?;
-        let url = web_sys::Url::create_object_url_with_blob(&blob)?;
-
-        let anchor: HtmlAnchorElement = self
-            .dom
-            .document
-            .create_element("a")?
-            .dyn_into()
-            .map_err(|_| JsValue::from_str("an anchor is not an anchor"))?;
-        anchor.set_href(&url);
-        anchor.set_download(name);
-        anchor.click();
-
-        // The blob would otherwise be held until the tab closes.
-        web_sys::Url::revoke_object_url(&url)
-    }
-
-    fn document_name(&self) -> String {
-        self.editor
-            .path()
-            .map(|path| path.display().to_string())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| UNTITLED.to_string())
-    }
-
-    /// Ask for a repaint the core will not send: a resize, or anything else that
-    /// changes the picture without changing the document.
-    ///
-    /// Coalesces exactly as the observer does, and for the same reason.
-    fn request_repaint(&self) {
-        if !self.pending.swap(true, Ordering::SeqCst) {
-            request_frame();
-        }
-    }
-
-    /// Change something only the shell knows about, and show it.
-    fn set_message(&self, message: String) {
-        *self.message.borrow_mut() = message;
-        self.request_repaint();
-    }
+    })
 }
 
-fn wire_keyboard(ui: &Rc<Ui>) -> Result<(), JsValue> {
-    let handler = ui.clone();
-    listen(&ui.dom.surface, "keydown", move |event: KeyboardEvent| {
-        handler.on_key(&event);
+/// Cut, Copy and Paste as the browser's own events: they carry the clipboard synchronously and
+/// need no permission, which `navigator.clipboard` does.
+fn wire_clipboard(ui: &Rc<Ui>) -> Result<(), JsValue> {
+    for verb in ["copy", "cut"] {
+        let clip = ui.clone();
+        listen(&ui.dom.input, verb, move |event: ClipboardEvent| {
+            let text = if verb == "cut" {
+                clip.app.cut()
+            } else {
+                clip.app.selected_text()
+            };
+            if let Some(data) = event.clipboard_data() {
+                let _ = data.set_data("text/plain", &text);
+                event.prevent_default();
+            }
+            clip.after_input();
+        })?;
+    }
+    let paste = ui.clone();
+    listen(&ui.dom.input, "paste", move |event: ClipboardEvent| {
+        if let Some(text) = event
+            .clipboard_data()
+            .and_then(|data| data.get_data("text/plain").ok())
+        {
+            event.prevent_default();
+            paste.app.insert_text(&text);
+            paste.after_input();
+        }
     })
 }
 
 fn wire_pointer(ui: &Rc<Ui>) -> Result<(), JsValue> {
-    let click = ui.clone();
-    listen(&ui.dom.surface, "mousedown", move |event: MouseEvent| {
-        if let Err(error) = click.on_pointer(&event) {
-            web_sys::console::error_1(&error);
+    let place = |ui: &Ui, event: &MouseEvent, extend: bool| {
+        let rect = ui.dom.page.get_bounding_client_rect();
+        let x = (f64::from(event.client_x()) - rect.left()) as f32;
+        let y = (f64::from(event.client_y()) - rect.top()) as f32;
+        ui.with_frame(|frame| ui.app.place_caret(frame, x, y, extend));
+    };
+    let down = ui.clone();
+    listen(&ui.dom.page, "mousedown", move |event: MouseEvent| {
+        event.prevent_default();
+        let _ = down.dom.input.focus();
+        down.dragging.set(true);
+        place(&down, &event, event.shift_key());
+    })?;
+    let moved = ui.clone();
+    let window = web_sys::window().unwrap();
+    listen(&window, "mousemove", move |event: MouseEvent| {
+        if moved.dragging.get() {
+            place(&moved, &event, true);
+            moved.after_input();
         }
+    })?;
+    let up = ui.clone();
+    listen(&window, "mouseup", move |_: MouseEvent| {
+        up.dragging.set(false)
     })?;
 
     let wheel = ui.clone();
-    listen(&ui.dom.surface, "wheel", move |event: WheelEvent| {
-        wheel.on_wheel(&event);
+    listen(&ui.dom.page, "wheel", move |event: WheelEvent| {
+        event.prevent_default();
+        let row = f64::from(wheel.metrics().line_height());
+        // deltaMode 1 is lines, 0 pixels; the page mode is rare enough to treat as lines.
+        let rows = match event.delta_mode() {
+            0 => event.delta_y() / row,
+            _ => event.delta_y(),
+        };
+        let total = wheel.wheel.get() + rows;
+        let whole = total.trunc();
+        wheel.wheel.set(total - whole);
+        if whole != 0.0 {
+            wheel.with_frame(|frame| wheel.app.scroll_by(frame, whole as i64));
+        }
     })
 }
 
 fn wire_toolbar(ui: &Rc<Ui>) -> Result<(), JsValue> {
-    // Every button hands the keyboard back afterwards: a toolbar that steals focus
-    // leaves the user typing into nothing.
-    let open = ui.clone();
-    listen(&ui.dom.open, "click", move |_: Event| {
-        open.open_picker();
-    })?;
-
-    let save = ui.clone();
-    listen(&ui.dom.save, "click", move |_: Event| {
-        save.save();
-        let _ = save.dom.surface.focus();
-    })?;
-
-    let undo = ui.clone();
-    listen(&ui.dom.undo, "click", move |_: Event| {
-        undo.editor.undo();
-        undo.follow_cursor();
-        let _ = undo.dom.surface.focus();
-    })?;
-
-    let redo = ui.clone();
-    listen(&ui.dom.redo, "click", move |_: Event| {
-        redo.editor.redo();
-        redo.follow_cursor();
-        let _ = redo.dom.surface.focus();
+    let buttons = ui.dom.document.query_selector_all("button[data-command]")?;
+    for i in 0..buttons.length() {
+        let Some(button) = buttons.item(i) else {
+            continue;
+        };
+        let element: web_sys::Element = button.clone().dyn_into()?;
+        let id = element.get_attribute("data-command").unwrap_or_default();
+        let command = Command::from_id(&id)
+            .ok_or_else(|| JsValue::from_str(&format!("no command {id:?} in the core")))?;
+        let clicked = ui.clone();
+        listen(&button, "click", move |_: MouseEvent| {
+            clicked.run(command);
+            let _ = clicked.dom.input.focus();
+        })?;
+    }
+    let palette = ui.clone();
+    let button: HtmlElement = element(&ui.dom.document, "palette-button")?;
+    listen(&button, "click", move |_: MouseEvent| {
+        palette.open_palette()
     })
 }
 
-fn wire_file_input(ui: &Rc<Ui>) -> Result<(), JsValue> {
-    let input = ui.dom.file_input.clone();
-    let ui = ui.clone();
-    listen(&input, "change", move |_: Event| {
-        let Some(file) = ui.dom.file_input.files().and_then(|files| files.get(0)) else {
+fn wire_find(ui: &Rc<Ui>) -> Result<(), JsValue> {
+    let find = ui.clone();
+    listen(
+        &ui.dom.find_input,
+        "keydown",
+        move |event: KeyboardEvent| match event.key().as_str() {
+            "Enter" => {
+                event.prevent_default();
+                let direction = if event.shift_key() {
+                    Search::Backward
+                } else {
+                    Search::Forward
+                };
+                if !find.app.find(&find.dom.find_input.value(), direction) {
+                    find.say("No match");
+                }
+                find.after_input();
+            }
+            "Escape" => {
+                find.dom.findbar.set_hidden(true);
+                let _ = find.dom.input.focus();
+            }
+            _ => {}
+        },
+    )?;
+    let close = ui.clone();
+    let button: HtmlElement = element(&ui.dom.document, "find-close")?;
+    listen(&button, "click", move |_: MouseEvent| {
+        close.dom.findbar.set_hidden(true);
+        let _ = close.dom.input.focus();
+    })
+}
+
+fn wire_palette(ui: &Rc<Ui>) -> Result<(), JsValue> {
+    let typed = ui.clone();
+    listen(&ui.dom.palette_input, "input", move |_: Event| {
+        typed.selected.set(0);
+        typed.render_palette();
+    })?;
+    let keys = ui.clone();
+    listen(
+        &ui.dom.palette_input,
+        "keydown",
+        move |event: KeyboardEvent| {
+            let matches = keys.matches();
+            match event.key().as_str() {
+                "ArrowDown" => keys
+                    .selected
+                    .set((keys.selected.get() + 1).min(matches.len().saturating_sub(1))),
+                "ArrowUp" => keys.selected.set(keys.selected.get().saturating_sub(1)),
+                "Escape" => return keys.close_palette(),
+                "Enter" => {
+                    keys.close_palette();
+                    if let Some(&command) = matches.get(keys.selected.get()) {
+                        keys.run(command);
+                    }
+                    return;
+                }
+                _ => return,
+            }
+            event.prevent_default();
+            keys.render_palette();
+        },
+    )?;
+    let clicked = ui.clone();
+    listen(&ui.dom.palette_list, "click", move |event: MouseEvent| {
+        let command = event
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+            .and_then(|e| e.closest("[data-command]").ok().flatten())
+            .and_then(|e| e.get_attribute("data-command"))
+            .and_then(|id| Command::from_id(&id));
+        if let Some(command) = command {
+            clicked.close_palette();
+            clicked.run(command);
+        }
+    })
+}
+
+fn wire_files(ui: &Rc<Ui>) -> Result<(), JsValue> {
+    let picked = ui.clone();
+    listen(&ui.dom.file_input, "change", move |_: Event| {
+        let Some(file) = picked.dom.file_input.files().and_then(|files| files.get(0)) else {
             return;
         };
-        // Reading a file is a promise; nothing else in this shell is async.
-        spawn_local(ui.clone().load(file));
+        picked.dom.file_input.set_value("");
+        spawn_local(picked.clone().load(file));
     })
 }
 
 fn wire_window(ui: &Rc<Ui>, window: &web_sys::Window) -> Result<(), JsValue> {
-    // A resize changes how many lines fit, which only a repaint can discover. It
-    // must not go through `set_message`: passing the current message back in would
-    // hold a `RefCell` borrow across the write and panic.
-    let resize = ui.clone();
+    // A resize moves where rows wrap, which only a repaint discovers. Not through `say`:
+    // passing it the current message would hold the `RefCell` borrow across its write.
+    let resized = ui.clone();
     listen(window, "resize", move |_: Event| {
-        resize.request_repaint();
+        resized.after_input();
+        if !resized.pending.swap(true, Ordering::SeqCst) {
+            request_frame();
+        }
     })?;
-
-    // The browser's own answer to GTK's "save before closing?" dialog. A page may
-    // ask for the prompt but not word it, so there is nothing to phrase here.
+    // The browser's own answer to "save before closing?": a page may ask for the prompt, but
+    // not word it.
     let unload = ui.clone();
     listen(window, "beforeunload", move |event: Event| {
-        if !unload.editor.is_dirty() {
-            return;
+        if unload.app.is_dirty() {
+            event.prevent_default();
+            let _ = js_sys::Reflect::set(&event, &"returnValue".into(), &"".into());
         }
-        event.prevent_default();
-        // Chrome still wants the legacy property set as well.
-        let _ = js_sys::Reflect::set(
-            &event,
-            &JsValue::from_str("returnValue"),
-            &JsValue::from_str(""),
-        );
     })
-}
-
-/// Attach a listener for the lifetime of the page.
-///
-/// The closure is deliberately leaked: it lives exactly as long as the element it
-/// is attached to, and both die with the tab.
-fn listen<E, F>(target: &web_sys::EventTarget, event: &str, handler: F) -> Result<(), JsValue>
-where
-    // Any DOM event type: `FromWasmAbi` is what lets JS hand it to a Rust closure.
-    E: wasm_bindgen::convert::FromWasmAbi + 'static,
-    F: FnMut(E) + 'static,
-{
-    let closure = Closure::wrap(Box::new(handler) as Box<dyn FnMut(E)>);
-    target.add_event_listener_with_callback(event, closure.as_ref().unchecked_ref())?;
-    closure.forget();
-    Ok(())
 }

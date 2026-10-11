@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: 2026 Florian Wilhelm <fwilhelm.wgt+github@gmail.com>
+#
+# SPDX-License-Identifier: MIT
+
+name: shells
+
+# The checks tier for the three shells that need something the `ci` jobs do not have — and two
+# of them need it only to *compile*, which is the trick: `cargo check`, `clippy`, `rustdoc` and
+# the portable tests never link, so the Windows and macOS shells are examined from Linux, on the
+# cheapest runner, in about a minute. Linking and running them is `artifacts.yml`'s, on their own
+# operating systems (doc/ci.md).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: shells-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gtk:
+    # Its own cache key: the only job that compiles gtk-rs, which every other job would restore
+    # only to ignore.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: linux-gtk
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgtk-4-dev libadwaita-1-dev
+      # The tests need no display: the keymap and menus are pure, and the drawing is Pango on a
+      # cairo image surface, rendered twice and compared byte for byte.
+      - run: cargo test --locked -p quill-gtk
+      - run: cargo clippy --locked -p quill-gtk --all-targets -- -D warnings
+      - run: cargo doc --no-deps --locked -p quill-gtk
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  win32-from-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: linux-msvc-check
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # `cargo build --target` would fail here, and that is not a bug: it tries to link and there
+      # is no MSVC. Only checking belongs on this runner.
+      - name: Type-check the Windows source without Windows
+        run: cargo check --locked -p quill-win32 --target x86_64-pc-windows-msvc
+      # The only clippy run that sees the `cfg(windows)` half.
+      - name: Lint it, for Windows, without Windows
+        run: cargo clippy --locked -p quill-win32 --target x86_64-pc-windows-msvc --all-targets -- -D warnings
+      # `ci.yml`'s docs job builds on the host, where every `cfg(windows)` item is compiled out,
+      # so a broken link in the window code is invisible to it. rustdoc does not link either.
+      - name: Document it, for Windows, without Windows
+        run: cargo doc --no-deps --locked -p quill-win32 --target x86_64-pc-windows-msvc
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  mac-from-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: linux-apple-check
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Both architectures: the release is universal, and a `cfg` that differs between them is
+      # exactly what one of them alone would miss. objc2's framework crates are pure Rust with
+      # their bindings checked in, so no SDK is needed.
+      - name: Type-check and lint the macOS source without a Mac
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo check --locked -p quill-mac --all-targets --target "$target"
+            cargo clippy --locked -p quill-mac --all-targets --target "$target" -- -D warnings
+          done
+      - name: Document it, for macOS, without a Mac
+        run: cargo doc --no-deps --locked -p quill-mac --target aarch64-apple-darwin
+        env:
+          RUSTDOCFLAGS: -D warnings
