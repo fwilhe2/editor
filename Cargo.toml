@@ -64,7 +64,7 @@ gtk4 = { version = "0.9", features = ["v4_12"] }
 async-channel = "2"
 # Pango on a cairo surface with no display: what `quill-gtk --render-to` draws with, and the
 # same calls the window's draw function makes. The same gtk-rs release as gtk4 0.9.
-pangocairo = "0.20"
+pangocairo = "0.22"
 # For `write_to_png`, which is behind a feature; the same crate as `gtk::cairo`, so enabling it
 # here enables it there.
 cairo-rs = { version = "0.20", features = ["png"] }
