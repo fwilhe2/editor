@@ -55,19 +55,19 @@ ratatui = "0.30"
 
 # The GNOME shell. gtk4 is reached as `libadwaita::gtk`; `v1_5` is what `AdwAlertDialog`
 # needs and matches the runtime on ubuntu-24.04.
-libadwaita = { version = "0.7", features = ["v1_5"] }
+libadwaita = { version = "0.9", features = ["v1_5"] }
 # Named only to switch on GTK 4.12's API (`gtk::FileDialog`, a primary `MenuButton`) in the
 # gtk4 crate libadwaita already brings; code still reaches it as `libadwaita::gtk`. 4.14 is
 # what ubuntu-24.04 ships.
-gtk4 = { version = "0.9", features = ["v4_12"] }
+gtk4 = { version = "0.11", features = ["v4_12"] }
 # Carries the core's notifications onto the GTK main context.
 async-channel = "2"
 # Pango on a cairo surface with no display: what `quill-gtk --render-to` draws with, and the
-# same calls the window's draw function makes. The same gtk-rs release as gtk4 0.9.
-pangocairo = "0.20"
+# same calls the window's draw function makes. The same gtk-rs release as gtk4 0.11.
+pangocairo = "0.22"
 # For `write_to_png`, which is behind a feature; the same crate as `gtk::cairo`, so enabling it
 # here enables it there.
-cairo-rs = { version = "0.20", features = ["png"] }
+cairo-rs = { version = "0.22", features = ["png"] }
 
 # The browser shell. The `wasm-bindgen` *CLI* that post-processes the module must be exactly
 # this crate's version; `ui_web/build.sh` reads it out of Cargo.lock and refuses a mismatch.

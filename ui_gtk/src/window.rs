@@ -256,7 +256,7 @@ impl Ui {
         dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
         dialog.set_default_response(Some("save"));
         dialog.set_close_response("cancel");
-        match dialog.choose_future(&self.window).await.as_str() {
+        match dialog.choose_future(Some(&self.window)).await.as_str() {
             "discard" => true,
             "save" => self.save().await,
             _ => false,
