@@ -67,7 +67,7 @@ async-channel = "2"
 pangocairo = "0.20"
 # For `write_to_png`, which is behind a feature; the same crate as `gtk::cairo`, so enabling it
 # here enables it there.
-cairo-rs = { version = "0.20", features = ["png"] }
+cairo-rs = { version = "0.22", features = ["png"] }
 
 # The browser shell. The `wasm-bindgen` *CLI* that post-processes the module must be exactly
 # this crate's version; `ui_web/build.sh` reads it out of Cargo.lock and refuses a mismatch.
