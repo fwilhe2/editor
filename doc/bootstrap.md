@@ -12,8 +12,19 @@ check the method relies on already wired. Bootstrapping turns it into *your* app
 different document, different verbs — while keeping the method, the shells, the ratchets and CI.
 
 `scripts/bootstrap.py` does the mechanical half. Everything from step 4 on is judgement, in an
-order that keeps the build green at every step. Read `doc/architecture.md` first: it is the method,
-and this file assumes it.
+order that keeps the build green at every step. Read `doc/tour.md` (what is where) and
+`doc/architecture.md` (the method) first; this file assumes both.
+
+The whole path, so you know where you are:
+
+| Step | What | Done when |
+|---|---|---|
+| 0 | Ask the person | you have a name, an ID, a licence, a domain, a list of shells |
+| 1–3 | Rename, licence, prove it | `scripts/check.sh` is green under the new name |
+| 4 | The core | `cargo test -p <slug>-core` passes, including the minimal shell |
+| 5 | The CLI | the parity test and the sample script pass |
+| 6 | The shells, one at a time | each compiles, passes its tests, and has been looked at |
+| 7–9 | Drop shells, identity, finish | `scripts/check.sh` is green and the template's own files are gone |
 
 ## 0. Ask before you start
 
@@ -89,6 +100,11 @@ Rules while you do it:
   how undo groups, what "modified" means.
 - Keep `encoding.rs`'s round-trip test, rewritten for your format. It is the most valuable test in
   the core.
+- **Bring `core/examples/minimal_shell.rs` along as you go.** It is a whole shell in one file with
+  no toolkit, and it builds and tests with the core — so it is the cheapest proof that your new
+  `App`, `View` and `Command` still add up to something a shell can drive, long before a real
+  shell compiles. When its `match` on `Command` and its `paint` read naturally for your domain,
+  the six real shells are transcriptions of it.
 
 ## 5. The CLI, in lock-step
 
@@ -119,7 +135,9 @@ summary that it has not been run, if it has not.
 
 Remove its directory, its line in `[workspace] members` (and `default-members`), its jobs in
 `shells.yml` and `artifacts.yml`, its entry in `cli/tests/packaging.rs`, its `doc/shells/` file, and
-its row in the README's table. `cargo test` and the packaging test will find what you missed.
+its row in the README's table. `cargo test` will find what you missed: the packaging test for the
+manifests and workflows, and `cli/tests/docs.rs` for every document and comment that still names a
+file of the shell you removed.
 
 ## 8. Identity details the script cannot know
 
@@ -137,5 +155,7 @@ its row in the README's table. `cargo test` and the packaging test will find wha
 - Delete `doc/bootstrap.md`, `scripts/bootstrap.py`, `.claude/skills/bootstrap/`, and the
   `bootstrap` job in `.github/workflows/ci.yml` — they describe the template, not your application.
 - Rewrite `AGENTS.md`'s first section for your application; keep the rest, which is the method.
+- `cargo test -p <slug>-cli --test docs` lists every remaining mention of the files you just
+  deleted. Remove those mentions; rewrite `doc/tour.md`'s tables for your own verbs and files.
 - `scripts/check.sh` green, and every shell looked at. Report what was verified and how, what was
   not (the macOS shell, without a Mac), and every named gap.
