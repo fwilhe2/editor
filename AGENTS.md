@@ -46,6 +46,8 @@ Breaking one fails the build; know which test will tell you.
 7. **Formatting, clippy with `-D warnings`, rustdoc with `-D warnings`, REUSE, and `cargo deny`** —
    all CI gates.
 8. **The template renames cleanly** (`ci.yml`'s `bootstrap` job).
+9. **Every path the documentation names exists** — in every `.md` and every Rust comment
+   (`cli/tests/docs.rs`). Rename or delete a file and the test lists who still points at it.
 
 ## The rules that are not, and matter as much
 
