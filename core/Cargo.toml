@@ -20,3 +20,10 @@ unicode-linebreak.workspace = true
 unicode-segmentation.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+
+# The whole shell contract in one file — the first thing to read, and the first thing to get
+# compiling again when the core is replaced. `test = true` so its own tests run with `cargo test`
+# (examples are only built by default), which is what keeps it from rotting.
+[[example]]
+name = "minimal_shell"
+test = true
