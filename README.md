@@ -23,6 +23,68 @@ changes in one shell do not silently redefine the application.
 [![shells](https://github.com/fwilhe2/editor/actions/workflows/shells.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/shells.yml)
 [![artifacts](https://github.com/fwilhe2/editor/actions/workflows/artifacts.yml/badge.svg)](https://github.com/fwilhe2/editor/actions/workflows/artifacts.yml)
 
+## The pattern in one picture
+
+```
+                core/   the model, every rule, all state — and no user interface
+                  ▲
+                  │  App::view(frame) → rows to paint      (the shell reads)
+                  │  App::type_text, move_caret, undo, …   (the shell forwards input)
+                  │  Observer::changed()                   (the core says "repaint")
+                  │  Metrics: how wide is this text?       (the one question the core asks back)
+                  │
+   ┌────────┬─────┴────┬──────────┬───────────┬───────────┐
+  cli/    ui_tui/    ui_gtk/    ui_web/    ui_win32/    ui_mac/
+ scripts  terminal    GNOME     browser     Windows      macOS
+```
+
+A shell does four things and nothing else: it turns platform input into calls on `App`, hears that
+something changed, asks for the rows that fit its window, and paints them. It holds no document
+state, so six shells cannot disagree about what the application does — only about how it looks,
+which is the point of having six.
+
+## Understand it in ten minutes
+
+The whole contract fits in one file with no toolkit. Run it, then read it:
+
+```sh
+cargo run -p quill-core --example minimal_shell
+```
+
+```
+hello world              ← you type; the text goes to the core
+  1 hello world          ← the shell prints the rows the core hands back
+  2 |                      (| is the caret)
+--- Untitled •
+:up                      ← a motion, by the core's own name for it
+  1 |hello world
+  2
+--- Untitled •
+:+word-right             ← "+" extends the selection, as Shift does
+  1 [hello] world
+  2
+--- Untitled •
+:edit.undo               ← a verb from the core's command table
+  1 |
+--- Untitled
+```
+
+[`core/examples/minimal_shell.rs`](core/examples/minimal_shell.rs) is about 350 lines with its
+comments and tests, and every real shell is that file plus its platform's conventions. From there:
+
+| Next | Read |
+|---|---|
+| What happens when a key is pressed, function by function, in every shell | [doc/tour.md](doc/tour.md) |
+| Where one capability lives in each layer, and which check notices when it is missing | [doc/tour.md](doc/tour.md#one-capability-top-to-bottom) |
+| Why it is shaped this way: the ten rules, the traps, the checklists | [doc/architecture.md](doc/architecture.md) |
+| Turning it into your own application | [doc/bootstrap.md](doc/bootstrap.md) |
+| One platform's conventions and known gaps | [doc/shells/](doc/shells/) |
+
+The code documents itself the same way throughout: every module opens with a design note saying
+what it is for and what decision shaped it, deliberate shortcuts are marked `ponytail:` with the
+way past them, and the rules that matter are tests — including one that fails when a document
+names a file that no longer exists.
+
 ## Why this pattern
 
 Cross-platform toolkits are a strong choice when a shared UI is the right product experience. A
@@ -56,8 +118,6 @@ faithful file saving.
 - **Build and release coverage.** CI checks the Rust workspace, checks Windows and macOS targets
   from Linux, exercises the template rename, and builds platform packages and browser assets.
 
-The [architecture guide](doc/architecture.md) explains the design and its verification in detail.
-
 ## Start your own application
 
 Use this repository as a starting point and follow the [bootstrap guide](doc/bootstrap.md). The
@@ -72,11 +132,24 @@ scripts/bootstrap.py --check quill
 The bootstrap job in CI runs the rename and checks that the generated project builds and contains
 no remaining `quill` references. That keeps the repository honest as a reusable template.
 
+You do not have to take all of it. Smaller ways in:
+
+- **Add a capability to the example** — a method on `App`, its CLI command, a `Command`, and one
+  line per shell. The compiler and the tests name every place you missed
+  ([the checklist](doc/architecture.md#7-checklists)).
+- **Keep the core and CLI, pick your shells.** Dropping a shell is deleting a directory and the
+  lines the tests then point at ([step 7](doc/bootstrap.md#7-dropping-a-shell-only-if-the-person-asked)).
+- **Write a shell for another toolkit.** Start from the minimal shell, implement `Metrics` with the
+  engine you draw with, and follow the "Adding a shell" checklist.
+- **Take only the idea.** The ten rules in the architecture guide do not depend on Rust or on a
+  text editor.
+
 ## Project layout
 
 | Path | Role |
 |---|---|
 | `core/` | `quill-core`: document, history, layout, view, commands, and application API |
+| `core/examples/minimal_shell.rs` | The shell contract in one file — start reading here |
 | `cli/` | `quill`: scriptable interface and CLI parity checks |
 | `ui_tui/` | `quill-tui`: terminal interface built with ratatui |
 | `ui_gtk/` | `quill-gtk`: GNOME interface built with GTK 4 and libadwaita |
@@ -85,7 +158,7 @@ no remaining `quill` references. That keeps the repository honest as a reusable 
 | `ui_mac/` | `quill-mac`: macOS interface built on AppKit and CoreText |
 | `examples/sample.sh` | Sample document assembled through CLI commands |
 | `scripts/` | Local checks, shell launchers, and the bootstrap script |
-| `doc/` | Architecture, CI, shell conventions, and design decisions |
+| `doc/` | The tour, architecture, bootstrap guide, CI, shell conventions, and design decisions |
 
 ## Build and run
 
