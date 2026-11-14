@@ -254,3 +254,25 @@ screenshot from Linux.)
 - [ ] Checks in `shells.yml` or `ci.yml`, a release build in `artifacts.yml`, packaging, and a row in
       `cli/tests/packaging.rs`.
 - [ ] `doc/shells/<name>.md`: conventions, how it is verified, and its gaps written down.
+
+## 8. What the template does not do
+
+Named here so that nobody mistakes a boundary for an oversight, or copies a gap without knowing it
+is one. Each shell's own gaps are at the end of its page in `doc/shells/`; the ones below belong to
+the whole.
+
+- **Left-to-right text only.** `core/src/layout.rs` breaks and measures in logical order. Bidirectional
+  layout would live there too — it decides where a caret goes, so it is a core question.
+- **No inline input-method composition** in any shell: an input method composes in its own window
+  and the result arrives as typed text. Marked text is presentation the core would need to know
+  about (it moves the caret), so adding it starts in the core.
+- **One document per process.** `App` is one document; a window is one `App`. Tabs or several
+  windows are a shell holding several `App`s, not a change to the core.
+- **UTF-8 only.** Anything else is refused on open (`Error::NotUtf8`) rather than guessed at — rule 7.
+- **A tab is a fixed width, not a tab stop** (`TAB_SPACES`), so that every shell agrees.
+- **The whole file is in memory.** The rope makes edits cheap, not files small.
+- **No plugins, no settings, no syntax colouring.** Each would be a capability like any other: a
+  method on `App`, a CLI command, then the shells.
+
+The code marks its own deliberate shortcuts with `ponytail:` — the ceiling, and the way past it.
+`grep -rn ponytail: .` lists them.
