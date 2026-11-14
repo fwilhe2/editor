@@ -14,6 +14,11 @@ This repository is both a reusable template and a working example: **Quill**, a 
 It includes a CLI, terminal UI, GNOME desktop app, browser app, Windows app, and macOS app. All six
 shells are written in Rust; none keeps a second copy of the document.
 
+![The GNOME shell of Quill: a libadwaita window titled sample.txt showing five numbered lines of text, the third wrapped over three rows with a selection spanning two of them](doc/images/gtk-shell.png)
+
+*The GNOME shell (`ui_gtk/`). The wrapping, the selection and the line numbers are the core's; the
+header bar, the font rendering and the colours are GTK's.*
+
 The pattern is especially useful for agent-driven development. Agents can implement a shell or
 capability against clear interfaces, while the architecture keeps product behaviour in one place.
 Tests and CI turn those interfaces into checks, so parallel implementation stays reviewable and
