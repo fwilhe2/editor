@@ -22,6 +22,8 @@ it: **Quill**, a plain text editor. Six front-ends, all Rust, none holding docum
 
 | Read | For |
 |---|---|
+| `doc/tour.md` | Where things are: a reading order, one keystroke and one capability traced through every layer |
+| `core/examples/minimal_shell.rs` | The whole shell contract in one runnable file |
 | `doc/architecture.md` | **The method — normative.** The ten rules, the order of work, the shapes every shell repeats, verification, the traps, and the checklists for a new capability and a new shell |
 | `doc/bootstrap.md` | Turning the template into another application |
 | `doc/ci.md` | The two CI tiers, why the Windows and macOS shells are checked from Linux, the CI traps, and how to screenshot each GUI from Linux |
