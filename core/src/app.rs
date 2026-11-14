@@ -292,7 +292,8 @@ impl App {
         })
     }
 
-    /// Select from `anchor` to `caret`.
+    /// Select from `anchor` to `caret`; the caret ends up at `caret`, so the selection can run
+    /// backwards. Both are clamped into the document.
     pub fn select(&self, anchor: Position, caret: Position) {
         self.mutate(|state| {
             state.anchor = Some(state.doc.offset(anchor));
@@ -302,6 +303,10 @@ impl App {
         });
     }
 
+    /// Select the whole document, with the caret at its end.
+    ///
+    /// The smallest complete capability, and so the one `doc/tour.md` follows through every
+    /// layer: this method, its CLI command, its `Command`, and one line in each shell.
     pub fn select_all(&self) {
         self.mutate(|state| {
             state.anchor = Some(0);
@@ -854,6 +859,16 @@ mod tests {
         assert!(app.find_again(Search::Backward));
         assert_eq!(app.selection(), at(8), "and backwards round the start");
         assert!(!app.find("zzz", Search::Forward));
+    }
+
+    #[test]
+    fn select_all_spans_the_document_and_leaves_the_caret_at_its_end() {
+        let app = app("one\ntwo");
+        app.select_all();
+        assert_eq!(app.selected_text(), "one\ntwo");
+        assert_eq!(app.caret(), Position::new(1, 3));
+        assert!(app.clear_selection());
+        assert_eq!(app.selection(), None);
     }
 
     #[test]
